@@ -178,6 +178,7 @@ def compute_and_write_segments(out_dir: str, g: GlobalArrays, cfg: Dict[str, flo
 
         dt = sample_times.view(-1, 1) - tc.view(1, -1)
         dt_scaled = dt / torch.clamp(ts.view(1, -1), min=1e-6)
+        # Match SIBR viewer CUDA: exp(-dt_scaled^2)
         gauss = torch.exp(-dt_scaled * dt_scaled)
 
         base_opacity = torch.sigmoid(opacity_logit).view(1, -1)

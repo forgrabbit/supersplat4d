@@ -113,9 +113,9 @@ void main(void) {
             float trbfScale = trbfData.g;
             
             // Calculate time offset and gaussian weight
-            // Match Python: exp(-0.5 * (dt_scaled^2))
+            // Match SIBR viewer CUDA: exp(-dt_scaled^2)
             float dt = (uCurrentTime - trbfCenter) / max(trbfScale, 1e-6);
-            float gaussian = exp(-0.5 * dt * dt);
+            float gaussian = exp(-dt * dt);
             
             // Apply gaussian weight to opacity
             color.a *= gaussian;
