@@ -104,6 +104,30 @@ void main(void) {
         // read color
         color = readColor(source);
 
+        // Apply dynamic opacity for dynamic gaussians
+        #ifdef DYNAMIC_MODE
+        if (uIsDynamic) {
+            ivec2 uv = ivec2(source.uv);
+            vec2 trbfData = texelFetch(splatTrbf, uv, 0).rg;
+            float trbfCenter = trbfData.r;
+            float trbfScale = trbfData.g;
+            
+            // Calculate time offset and gaussian weight
+            // Match Python: exp(-0.5 * (dt_scaled^2))
+            float dt = (uCurrentTime - trbfCenter) / max(trbfScale, 1e-6);
+            float gaussian = exp(-0.5 * dt * dt);
+            
+            // Apply gaussian weight to opacity
+            color.a *= gaussian;
+            
+            // Discard splats with low opacity (improves performance and visual quality)
+            if (color.a < 0.05) {
+                gl_Position = discardVec;
+                return;
+            }
+        }
+        #endif
+
         // evaluate spherical harmonics
         #if SH_BANDS > 0
         // calculate the model-space view direction
@@ -195,6 +219,13 @@ uniform mat4 matrix_projection;
 uniform highp usampler2D splatTransform;        // per-splat index into transform palette
 uniform sampler2D transformPalette;             // palette of transform matrices
 
+uniform float uCurrentTime;                     // current absolute time for dynamic gaussians
+uniform bool uIsDynamic;                        // whether this is a dynamic gaussian splat
+#ifdef DYNAMIC_MODE
+uniform sampler2D splatMotion;                 // For dynamic: motion_0, motion_1, motion_2 (RGB)
+uniform sampler2D splatTrbf;                    // For dynamic: trbf_center, trbf_scale (RG)
+#endif
+
 mat4 applyPaletteTransform(SplatSource source, mat4 model) {
     uint transformIndex = texelFetch(splatTransform, source.uv, 0).r;
     if (transformIndex == 0u) {
@@ -214,10 +245,39 @@ mat4 applyPaletteTransform(SplatSource source, mat4 model) {
     return model * transpose(t);
 }
 
+// Compute dynamic position for a gaussian
+// pos(t) = base_pos + motion * (t - trbf_center)  [Linear motion, as in SIBR]
+vec3 computeDynamicPosition(SplatSource source, vec3 basePos) {
+    #ifndef DYNAMIC_MODE
+    return basePos;
+    #else
+    if (!uIsDynamic) {
+        return basePos;
+    }
+    
+    // Read motion and trbf from textures
+    ivec2 uv = ivec2(source.uv);
+    vec4 motionData = texelFetch(splatMotion, uv, 0);
+    vec2 trbfData = texelFetch(splatTrbf, uv, 0).rg;
+    
+    vec3 motion = motionData.rgb;
+    float trbfCenter = trbfData.r;
+    
+    // Calculate time offset (dt = t - trbf_center)
+    float dt = uCurrentTime - trbfCenter;
+    
+    // Apply linear motion (no gaussian weight for position!)
+    return basePos + motion * dt;
+    #endif
+}
+
 // project the model space gaussian center to view and clip space
 bool initCenter(SplatSource source, vec3 modelCenter, out SplatCenter center) {
+    // Apply dynamic position transformation if this is a dynamic gaussian
+    vec3 dynamicCenter = uIsDynamic ? computeDynamicPosition(source, modelCenter) : modelCenter;
+    
     mat4 modelView = matrix_view * applyPaletteTransform(source, matrix_model);
-    vec4 centerView = modelView * vec4(modelCenter, 1.0);
+    vec4 centerView = modelView * vec4(dynamicCenter, 1.0);
 
     // early out if splat is behind the camera
     if (centerView.z > 0.0) {

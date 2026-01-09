@@ -26,11 +26,16 @@ class Ticks extends Container {
 
         // rebuild the timeline
         const rebuild = () => {
+            console.log('🔄 Timeline rebuild() called');
+            console.log('  Has timeline.frames?', events.functions.has('timeline.frames'));
+            console.log('  Has timeline.frame?', events.functions.has('timeline.frame'));
+            
             // clear existing labels
             workArea.dom.innerHTML = '';
 
-            const numFrames = events.invoke('timeline.frames');
-            const currentFrame = events.invoke('timeline.frame');
+            // Check if timeline functions are registered before invoking
+            const numFrames = events.invoke('timeline.frames') ?? 180;
+            const currentFrame = events.invoke('timeline.frame') ?? 0;
 
             const padding = 20;
             const width = this.dom.getBoundingClientRect().width - padding * 2;
@@ -101,7 +106,10 @@ class Ticks extends Container {
                 keys.push(label);
             };
 
-            (events.invoke('timeline.keys') as number[]).forEach(createKey);
+            const timelineKeys = events.invoke('timeline.keys') as number[];
+            if (timelineKeys && Array.isArray(timelineKeys)) {
+                timelineKeys.forEach(createKey);
+            }
 
             addKey = (value: number) => {
                 createKey(value);
@@ -152,7 +160,26 @@ class Ticks extends Container {
         });
 
         // rebuild the timeline on dom resize
-        new ResizeObserver(() => rebuild()).observe(workArea.dom);
+        // Delay initial observation to ensure timeline events are registered
+        const resizeObserver = new ResizeObserver(() => {
+            // Only rebuild if timeline functions are available
+            if (events.functions.has('timeline.frames')) {
+                rebuild();
+            }
+        });
+        // Use requestAnimationFrame to delay observation until after timeline registration
+        console.log('⏳ Scheduling timeline rebuild via requestAnimationFrame...');
+        requestAnimationFrame(() => {
+            console.log('🎬 requestAnimationFrame callback executing');
+            resizeObserver.observe(workArea.dom);
+            // Initial rebuild after timeline is registered
+            if (events.functions.has('timeline.frames')) {
+                console.log('✅ timeline.frames exists, calling rebuild()');
+                rebuild();
+            } else {
+                console.warn('⚠️ timeline.frames NOT registered yet, skipping rebuild()');
+            }
+        });
 
         // rebuild when timeline frames change
         events.on('timeline.frames', () => {
@@ -331,7 +358,10 @@ class TimelinePanel extends Container {
                 if (dir === 'back') {
                     events.fire('timeline.setFrame', 0);
                 } else {
-                    events.fire('timeline.setFrame', events.invoke('timeline.frames') - 1);
+                    const maxFrames = events.invoke('timeline.frames');
+                    if (maxFrames !== undefined) {
+                        events.fire('timeline.setFrame', maxFrames - 1);
+                    }
                 }
             }
         };

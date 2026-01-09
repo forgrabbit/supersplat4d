@@ -168,16 +168,15 @@ class VideoSettingsDialog extends Container {
 
         // frame range
 
-        const totalFrames = events.invoke('timeline.frames');
         const frameRangeLabel = new Label({ class: 'label', text: localize('popup.render-video.frame-range') });
         const frameRangeInput = new VectorInput({
             class: 'vector-input',
             dimensions: 2,
             min: 0,
-            max: totalFrames - 1,
+            max: 180 - 1,  // Will be updated in reset()
             placeholder: [localize('popup.render-video.frame-range-first'), localize('popup.render-video.frame-range-last')],
             precision: 0,
-            value: [0, totalFrames - 1]
+            value: [0, 180 - 1]  // Will be updated in reset()
         });
         const frameRangeRow = new Container({ class: 'row' });
         frameRangeRow.append(frameRangeLabel);

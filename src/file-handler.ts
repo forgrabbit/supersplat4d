@@ -139,38 +139,6 @@ type ImportFile = {
 
 const vec = new Vec3();
 
-// load inria camera poses from json file
-const loadCameraPoses = async (file: ImportFile, events: Events) => {
-    const response = new Response(file.contents);
-    const json = await response.json();
-
-    if (json.length > 0) {
-        // sort entries by trailing number if it exists
-        const sorter = (a: any, b: any) => {
-            const avalue = a.id ?? a.img_name?.match(/\d*$/)?.[0];
-            const bvalue = b.id ?? b.img_name?.match(/\d*$/)?.[0];
-            return (avalue && bvalue) ? parseInt(avalue, 10) - parseInt(bvalue, 10) : 0;
-        };
-
-        json.sort(sorter).forEach((pose: any, i: number) => {
-            if (pose.hasOwnProperty('position') && pose.hasOwnProperty('rotation')) {
-                const p = new Vec3(pose.position);
-                const z = new Vec3(pose.rotation[0][2], pose.rotation[1][2], pose.rotation[2][2]);
-
-                // Use fixed offset along Z-axis direction instead of variable dot product
-                vec.copy(z).mulScalar(10).add(p);
-
-                events.fire('camera.addPose', {
-                    name: pose.img_name ?? `${file.filename}_${i}`,
-                    frame: i,
-                    position: new Vec3(-p.x, -p.y, p.z),
-                    target: new Vec3(-vec.x, -vec.y, vec.z)
-                });
-            }
-        });
-    }
-};
-
 const removeExtension = (filename: string) => {
     return filename.substring(0, filename.length - path.getExtension(filename).length);
 };
@@ -238,6 +206,43 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             header: localize('popup.error-loading'),
             message: `${message} while loading '${filename}'`
         });
+    };
+
+    // load inria camera poses from json file
+    const loadCameraPoses = async (file: ImportFile, events: Events) => {
+        try {
+            const response = new Response(file.contents);
+            const json = await response.json();
+
+            if (json.length > 0) {
+                // sort entries by trailing number if it exists
+                const sorter = (a: any, b: any) => {
+                    const avalue = a.id ?? a.img_name?.match(/\d*$/)?.[0];
+                    const bvalue = b.id ?? b.img_name?.match(/\d*$/)?.[0];
+                    return (avalue && bvalue) ? parseInt(avalue, 10) - parseInt(bvalue, 10) : 0;
+                };
+
+                json.sort(sorter).forEach((pose: any, i: number) => {
+                    if (pose.hasOwnProperty('position') && pose.hasOwnProperty('rotation')) {
+                        const p = new Vec3(pose.position);
+                        const z = new Vec3(pose.rotation[0][2], pose.rotation[1][2], pose.rotation[2][2]);
+
+                        // Use fixed offset along Z-axis direction instead of variable dot product
+                        vec.copy(z).mulScalar(10).add(p);
+
+                        events.fire('camera.addPose', {
+                            name: pose.img_name ?? `${file.filename}_${i}`,
+                            frame: i,
+                            position: new Vec3(-p.x, -p.y, p.z),
+                            target: new Vec3(-vec.x, -vec.y, vec.z)
+                        });
+                    }
+                });
+            }
+        } catch (error) {
+            console.error('Failed to load camera poses:', error);
+            await showLoadError('Failed to parse camera poses JSON file', file.filename);
+        }
     };
 
     // import a single file, .ply, .splat or meta.json
@@ -356,6 +361,9 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 if (filename.endsWith('.ssproj')) {
                     // load ssproj document
                     await events.invoke('doc.load', files[i].contents ?? (await fetch(files[i].url)).arrayBuffer(), files[i].handle);
+                } else if (filename.endsWith('.dyn.json')) {
+                    // load dynamic gaussian splat model
+                    result.push(await importFile(files[i], animationFrame));
                 } else if (['.ply', '.splat', '.sog'].some(ext => filename.endsWith(ext))) {
                     // load gaussian splat model
                     result.push(await importFile(files[i], animationFrame));

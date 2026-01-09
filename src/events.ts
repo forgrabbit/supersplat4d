@@ -17,7 +17,9 @@ class Events extends EventHandler {
     invoke(name: string, ...args: any[]) {
         const fn = this.functions.get(name);
         if (!fn) {
-            console.log(`error: function not found '${name}'`);
+            console.error(`❌ ERROR: function not found '${name}'`);
+            console.error('📍 Call stack:', new Error().stack);
+            console.error('📋 Available functions:', Array.from(this.functions.keys()));
             return;
         }
         return fn(...args);

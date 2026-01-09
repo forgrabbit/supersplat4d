@@ -3,9 +3,13 @@ import { EventHandle } from 'playcanvas';
 import { Events } from './events';
 
 const registerTimelineEvents = (events: Events) => {
+    console.log('🎯 registerTimelineEvents START');
     let frames = 180;
     let frameRate = 30;
     let smoothness = 1;
+    let isDynamic = false;
+    let dynamicDuration = 0;
+    let dynamicFps = 30;
 
     // frames
 
@@ -16,9 +20,11 @@ const registerTimelineEvents = (events: Events) => {
         }
     };
 
+    console.log('📝 Registering timeline.frames function...');
     events.function('timeline.frames', () => {
         return frames;
     });
+    console.log('✅ timeline.frames registered');
 
     events.on('timeline.setFrames', (value: number) => {
         setFrames(value);
@@ -84,9 +90,10 @@ const registerTimelineEvents = (events: Events) => {
 
         // handle application update tick
         animHandle = events.on('update', (dt: number) => {
+            // Timeline always advances frames
+            // Dynamic gaussians read frame from timeline and handle sorting themselves
             time = (time + dt * frameRate) % frames;
             setFrame(Math.floor(time));
-            events.fire('timeline.time', time);
         });
     };
 
@@ -143,6 +150,28 @@ const registerTimelineEvents = (events: Events) => {
         }
     });
 
+    // dynamic mode
+
+    events.function('timeline.isDynamic', () => {
+        return isDynamic;
+    });
+
+    events.on('timeline.setDynamic', (duration: number, fps: number) => {
+        isDynamic = true;
+        dynamicDuration = duration;
+        dynamicFps = fps;
+        // Set frames based on duration and fps
+        const totalFrames = Math.ceil(duration * fps);
+        setFrames(totalFrames);
+        setFrameRate(fps);
+        events.fire('timeline.dynamicChanged', true);
+    });
+
+    events.on('timeline.setStatic', () => {
+        isDynamic = false;
+        events.fire('timeline.dynamicChanged', false);
+    });
+
     // doc
 
     events.function('docSerialize.timeline', () => {
@@ -150,7 +179,10 @@ const registerTimelineEvents = (events: Events) => {
             frames,
             frameRate,
             frame,
-            smoothness
+            smoothness,
+            isDynamic,
+            dynamicDuration,
+            dynamicFps
         };
     });
 
@@ -159,6 +191,9 @@ const registerTimelineEvents = (events: Events) => {
         events.fire('timeline.setFrameRate', data.frameRate ?? 30);
         events.fire('timeline.setFrame', data.frame ?? 0);
         events.fire('timeline.setSmoothness', data.smoothness ?? 0);
+        if (data.isDynamic && data.dynamicDuration && data.dynamicFps) {
+            events.fire('timeline.setDynamic', data.dynamicDuration, data.dynamicFps);
+        }
     });
 };
 
