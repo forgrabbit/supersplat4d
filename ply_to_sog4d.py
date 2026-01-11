@@ -928,11 +928,11 @@ def main():
                         help='Random seed for --max_splats sampling')
     parser.add_argument('--segment_duration', type=float, default=0.5,
                         help='Duration of each segment in seconds (default: 0.5)')
-    parser.add_argument('--opacity_threshold', type=float, default=0.001,
+    parser.add_argument('--opacity_threshold', type=float, default=0.005,
                         help='Opacity threshold to consider a splat active (default: 0.005)')
     parser.add_argument('--no-trbf-kmeans', action='store_true',
                         help='Disable k-means clustering for TRBF (use 16-bit quantization instead)')
-    parser.add_argument('--no-filter', action='store_true',
+    parser.add_argument('--filter_opacity', action='store_true',
                         help='Disable filtering of low opacity splats')
 
     args = parser.parse_args()
@@ -949,7 +949,7 @@ def main():
     data = load_ply_dynamic(args.ply, sh_degree=sh_degree, max_splats=max_splats, seed=args.seed)
 
     # Filter out low opacity splats (those invisible across all frames)
-    if not args.no_filter:
+    if args.filter_opacity:
         opacity_threshold = args.opacity_threshold
         data = filter_low_opacity_splats(data, cfg, opacity_threshold)
 
