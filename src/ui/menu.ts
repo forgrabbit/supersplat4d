@@ -130,6 +130,13 @@ class Menu extends Container {
         }, {
             // separator
         }, {
+            text: 'Dynamic Gaussian...',
+            icon: createSvg(sceneExport),
+            isEnabled: () => events.invoke('scene.hasDynamicGaussian') === true,
+            onSelect: () => events.invoke('scene.exportDynamic')
+        }, {
+            // separator
+        }, {
             text: localize('menu.file.export.viewer', { ellipsis: true }),
             icon: createSvg(sceneExport),
             isEnabled: () => !events.invoke('scene.empty'),

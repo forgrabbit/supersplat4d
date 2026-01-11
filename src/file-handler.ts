@@ -8,6 +8,8 @@ import { Scene } from './scene';
 import { DownloadWriter, FileStreamWriter } from './serialize/writer';
 import { Splat } from './splat';
 import { serializePly, serializePlyCompressed, SerializeSettings, serializeSplat, serializeViewer, ViewerExportSettings } from './splat-serialize';
+import { serializeDynamicPly, serializeSog4d } from './serialize-dynamic';
+import type { DynamicExportOptions, DynamicExportParams } from './ui/dynamic-export-dialog';
 import { localize } from './ui/localization';
 
 // ts compiler and vscode find this type, but eslint does not
@@ -593,6 +595,121 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             events.fire('stopSpinner');
         }
     });
+
+    // Dynamic gaussian export
+    events.function('scene.exportDynamic', async () => {
+        const splats = getSplats();
+        
+        // Find the first dynamic splat
+        const dynamicSplat = splats.find(s => s.isDynamic && s.dynManifest);
+        if (!dynamicSplat || !dynamicSplat.dynManifest) {
+            await events.invoke('showPopup', {
+                type: 'error',
+                header: 'Export Error',
+                message: 'No dynamic gaussian found in the scene'
+            });
+            return;
+        }
+
+        const manifest = dynamicSplat.dynManifest;
+        const params: DynamicExportParams = {
+            originalStart: manifest.start,
+            originalDuration: manifest.duration,
+            fps: manifest.fps,
+            filename: dynamicSplat.name || 'dynamic_export'
+        };
+
+        // Show export dialog
+        const options = await events.invoke('showDynamicExportDialog', params) as DynamicExportOptions | null;
+        if (!options) {
+            return;  // User cancelled
+        }
+
+        const hasFilePicker = !!window.showSaveFilePicker;
+        const extension = options.format === 'sog4d' ? '.sog4d' : '.ply';
+        const filename = options.filename.replace(/\.(ply|sog4d)$/i, '') + extension;
+
+        const fileType = options.format === 'sog4d' ? 'sog4d' : 'ply';
+
+        if (hasFilePicker) {
+            try {
+                const fileHandle = await window.showSaveFilePicker({
+                    id: 'SuperSplatDynamicExport',
+                    types: [filePickerTypes[fileType]],
+                    suggestedName: filename
+                });
+                await writeDynamicExport(events, dynamicSplat, options, await fileHandle.createWritable());
+            } catch (error: any) {
+                if (error.name !== 'AbortError') {
+                    console.error(error);
+                    await events.invoke('showPopup', {
+                        type: 'error',
+                        header: 'Export Error',
+                        message: error.message || 'Failed to export'
+                    });
+                }
+            }
+        } else {
+            await writeDynamicExport(events, dynamicSplat, options);
+        }
+    });
+};
+
+// Helper function for dynamic export
+const writeDynamicExport = async (
+    events: Events,
+    splat: Splat,
+    options: DynamicExportOptions,
+    stream?: FileSystemWritableFileStream
+) => {
+    events.fire('startSpinner');
+
+    try {
+        // Show progress for SOG4D
+        if (options.format === 'sog4d') {
+            events.fire('progressStart', 'Exporting SOG4D (this may take a few minutes)...');
+        }
+
+        await new Promise<void>((resolve) => setTimeout(resolve));
+
+        const extension = options.format === 'sog4d' ? '.sog4d' : '.ply';
+        const filename = options.filename.replace(/\.(ply|sog4d)$/i, '') + extension;
+        const writer = stream ? new FileStreamWriter(stream) : new DownloadWriter(filename);
+
+        try {
+            const info = {
+                splat,
+                manifest: splat.dynManifest!,
+                splatData: splat.splatData
+            };
+
+            if (options.format === 'sog4d') {
+                await serializeSog4d(info, options, writer, (p, stage) => {
+                    events.fire('progressUpdate', { text: stage, progress: p });
+                });
+            } else {
+                await serializeDynamicPly(info, options, writer);
+            }
+        } finally {
+            await writer.close();
+        }
+
+        if (options.format === 'sog4d') {
+            events.fire('progressEnd');
+        }
+
+    } catch (error: any) {
+        if (options.format === 'sog4d') {
+            events.fire('progressEnd');
+        }
+        await events.invoke('showPopup', {
+            type: 'error',
+            header: 'Export Error',
+            message: `${error.message ?? error} while exporting`
+        });
+    } finally {
+        events.fire('stopSpinner');
+    }
 };
 
 export { initFileHandler, ExportType, SceneExportOptions };

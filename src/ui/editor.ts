@@ -6,6 +6,7 @@ import { Events } from '../events';
 import { BottomToolbar } from './bottom-toolbar';
 import { ColorPanel } from './color-panel';
 import { DynamicParamsDialog } from './dynamic-params-dialog';
+import { DynamicExportDialog } from './dynamic-export-dialog';
 import { ExportPopup } from './export-popup';
 import { ImageSettingsDialog } from './image-settings-dialog';
 import { localize, localizeInit } from './localization';
@@ -183,12 +184,16 @@ class EditorUI {
         // dynamic params dialog
         const dynamicParamsDialog = new DynamicParamsDialog(events);
 
+        // dynamic export dialog
+        const dynamicExportDialog = new DynamicExportDialog(events);
+
         topContainer.append(popup);
         topContainer.append(exportPopup);
         topContainer.append(publishSettingsDialog);
         topContainer.append(imageSettingsDialog);
         topContainer.append(videoSettingsDialog);
         topContainer.append(dynamicParamsDialog);
+        topContainer.append(dynamicExportDialog);
 
         appContainer.append(editorContainer);
         appContainer.append(topContainer);
@@ -334,6 +339,11 @@ class EditorUI {
         // dynamic params dialog for PLY files without cfg_args
         events.function('showDynamicParamsDialog', (filename: string) => {
             return dynamicParamsDialog.show(filename);
+        });
+
+        // dynamic export dialog
+        events.function('showDynamicExportDialog', (params: any) => {
+            return dynamicExportDialog.show(params);
         });
 
         // spinner
