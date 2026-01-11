@@ -1,90 +1,67 @@
-# SuperSplat Editor
+# SuperSplat 4D Editor
 
-[![Github Release](https://img.shields.io/github/v/release/playcanvas/supersplat)](https://github.com/playcanvas/supersplat/releases)
+
 [![License](https://img.shields.io/github/license/playcanvas/supersplat)](https://github.com/playcanvas/supersplat/blob/main/LICENSE)
-[![Discord](https://img.shields.io/badge/Discord-5865F2?style=flat&logo=discord&logoColor=white&color=black)](https://discord.gg/RSaMRzg)
-[![Reddit](https://img.shields.io/badge/Reddit-FF4500?style=flat&logo=reddit&logoColor=white&color=black)](https://www.reddit.com/r/PlayCanvas)
-[![X](https://img.shields.io/badge/X-000000?style=flat&logo=x&logoColor=white&color=black)](https://x.com/intent/follow?screen_name=playcanvas)
 
-| [SuperSplat Editor](https://superspl.at/editor) | [User Guide](https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/supersplat/) | [Blog](https://blog.playcanvas.com) | [Forum](https://forum.playcanvas.com) |
+SuperSplat 4D is an enhanced version of the SuperSplat Editor, extending support to **Dynamic Gaussian Splatting (4D)**. It is a free and open-source tool for inspecting, editing, optimizing, and publishing both static and dynamic Gaussian Splats. Built on web technologies, it runs directly in your browser.
 
-The SuperSplat Editor is a free and open source tool for inspecting, editing, optimizing and publishing 3D Gaussian Splats. It is built on web technologies and runs in the browser, so there's nothing to download or install.
+A live version of this tool is available at: https://supersplat4d.netlify.app/
 
-A live version of this tool is available at: https://superspl.at/editor
+## Key Features
 
-![image](https://github.com/user-attachments/assets/b6cbb5cc-d3cc-4385-8c71-ab2807fd4fba)
+- **Dynamic Gaussian Support**: Load, play, and visualize dynamic splats with Time-Radial Basis Functions (TRBF).
+- **Format Support**:
+  - **.sog4d**: Highly compressed dynamic splat format using k-means clustering and WebP.
+  - **.ply**: Direct loading of dynamic PLY files containing `trbf_center`, `trbf_scale`, and `motion` attributes.
+- **Dynamic Editing**:
+  - Select and delete瑕疵 (artifacts) or unwanted splats across the entire animation.
+  - Filter splats based on dynamic opacity.
+- **Export Capabilities**:
+  - Export edited dynamic scenes back to `.ply` or `.sog4d`.
+  - Selective time-range export (Scheme A: keeping original `trbf_center`).
 
-To learn more about using SuperSplat, please refer to the [User Guide](https://developer.playcanvas.com/user-manual/gaussian-splatting/editing/supersplat/).
+## Compression Tool
+
+The repository includes a Python script to compress raw dynamic PLY files into the efficient `.sog4d` format:
+
+```bash
+python ply_to_sog4d.py --ply input.ply -o output.sog4d
+```
+
+The script can read `cfg_args` directly from the PLY header if it contains a line like:
+`comment cfg_args: duration=2.0 start=0.0 fps=30.0 sh_degree=0`
 
 ## Local Development
 
-To initialize a local development environment for SuperSplat, ensure you have [Node.js](https://nodejs.org/) 18 or later installed. Follow these steps:
+To initialize a local development environment, ensure you have [Node.js](https://nodejs.org/) 18 or later installed.
 
-1. Clone the repository:
-
+1. Clone and switch branch:
    ```sh
    git clone https://github.com/playcanvas/supersplat.git
    cd supersplat
+   git checkout splat4d
    ```
 
 2. Install dependencies:
-
    ```sh
    npm install
    ```
 
-3. Build SuperSplat and start a local web server:
-
+3. Run development server:
    ```sh
    npm run develop
    ```
 
-4. Open a web browser tab and make sure network caching is disabled on the network tab and the other application caches are clear:
+3. Navigate to `http://localhost:3000`
 
-   - On Safari you can use `Cmd+Option+e` or Develop->Empty Caches.
-   - On Chrome ensure the options "Update on reload" and "Bypass for network" are enabled in the Application->Service workers tab:
+## Localizing the Editor
 
-   <img width="846" alt="Screenshot 2025-04-25 at 16 53 37" src="https://github.com/user-attachments/assets/888bac6c-25c1-4813-b5b6-4beecf437ac9" />
-
-5. Navigate to `http://localhost:3000`
-
-When changes to the source are detected, SuperSplat is rebuilt automatically. Simply refresh your browser to see your changes.
-
-## Localizing the SuperSplat Editor
-
-The currently supported languages are available here:
-
-https://github.com/playcanvas/supersplat/tree/main/static/locales
-
-### Adding a New Language
-
-1. Add a new `<locale>.json` file in the `static/locales` directory.
-
-2. Add the locale to the list here:
-
-   https://github.com/playcanvas/supersplat/blob/main/src/ui/localization.ts
-
-### Testing Translations
-
-To test your translations:
-
-1. Run the development server:
-
-   ```sh
-   npm run develop
-   ```
-
-2. Open your browser and navigate to:
-
-   ```
-   http://localhost:3000/?lng=<locale>
-   ```
-
-   Replace `<locale>` with your language code (e.g., `fr`, `de`, `es`).
+Supported languages are located in `static/locales`. To test a specific language:
+`http://localhost:3000/?lng=<locale>` (e.g., `zh`, `en`).
 
 ## Contributors
 
-SuperSplat is made possible by our amazing open source community:
+SuperSplat is made possible by the open source community and the original PlayCanvas team.
 
 <a href="https://github.com/playcanvas/supersplat/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=playcanvas/supersplat" />

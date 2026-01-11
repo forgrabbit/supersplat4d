@@ -3,3 +3,8 @@ dist
 .DS_Store
 .npmrc
 .vscode
+
+public/
+
+DEPLOYMENT.md
+README_DEPLOYMENT_CN.md
