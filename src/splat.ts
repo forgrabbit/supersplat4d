@@ -714,8 +714,10 @@ class Splat extends Element {
             // Use setTimeout to ensure timeline events are registered
             setTimeout(() => {
                 this.scene.events.fire('timeline.setDynamic', this.dynManifest!.duration, this.dynManifest!.fps);
-                // Register dynamic gaussian control
-                this.scene.events.function('scene.hasDynamicGaussian', () => true);
+                // Register dynamic gaussian control (only if not already registered)
+                if (!this.scene.events.functions.has('scene.hasDynamicGaussian')) {
+                    this.scene.events.function('scene.hasDynamicGaussian', () => true);
+                }
             }, 0);
             
             // Initialize time and load first segment

@@ -62,10 +62,15 @@ interface Sog4dMeta {
         files: string[];
     };
     trbf: {
-        center_min: number;
-        center_max: number;
-        scale_min: number;  // log(trbf_scale)
-        scale_max: number;
+        encoding: 'kmeans' | 'quantize16';
+        // For kmeans encoding
+        center_codebook?: number[];
+        scale_codebook?: number[];  // Values are log(trbf_scale)
+        // For quantize16 encoding
+        center_min?: number;
+        center_max?: number;
+        scale_min?: number;  // log(trbf_scale)
+        scale_max?: number;
         files: string[];
     };
 
@@ -201,14 +206,13 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
 
     const count = meta.count;
 
-    // Load and decode WebP images
+    // Load and decode WebP images (common files)
     const [
         meansL, meansU,
         quatsData,
         scalesData,
         sh0Data,
-        motionL, motionU,
-        trbfL, trbfU
+        motionL, motionU
     ] = await Promise.all([
         loadFile('means_l.webp').then(decodeWebP),
         loadFile('means_u.webp').then(decodeWebP),
@@ -216,10 +220,23 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
         loadFile('scales.webp').then(decodeWebP),
         loadFile('sh0.webp').then(decodeWebP),
         loadFile('motion_l.webp').then(decodeWebP),
-        loadFile('motion_u.webp').then(decodeWebP),
-        loadFile('trbf_l.webp').then(decodeWebP),
-        loadFile('trbf_u.webp').then(decodeWebP)
+        loadFile('motion_u.webp').then(decodeWebP)
     ]);
+
+    // Load TRBF data (different files depending on encoding mode)
+    const trbfIsKmeans = meta.trbf.encoding === 'kmeans';
+    let trbfData: { rgba: Uint8Array, width: number, height: number } | null = null;
+    let trbfL: { rgba: Uint8Array, width: number, height: number } | null = null;
+    let trbfU: { rgba: Uint8Array, width: number, height: number } | null = null;
+
+    if (trbfIsKmeans) {
+        trbfData = await loadFile('trbf.webp').then(decodeWebP);
+    } else {
+        [trbfL, trbfU] = await Promise.all([
+            loadFile('trbf_l.webp').then(decodeWebP),
+            loadFile('trbf_u.webp').then(decodeWebP)
+        ]);
+    }
 
     // Allocate output arrays
     const x = new Float32Array(count);
@@ -326,16 +343,32 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
 
     // Decode TRBF parameters
     console.log('  Decoding TRBF parameters...');
-    const trbfLRgba = trbfL.rgba;
-    const trbfURgba = trbfU.rgba;
+    
+    if (trbfIsKmeans && trbfData) {
+        // K-means encoded: lookup from codebooks
+        const trbfRgba = trbfData.rgba;
+        const centerCodebook = new Float32Array(meta.trbf.center_codebook!);
+        const scaleCodebook = new Float32Array(meta.trbf.scale_codebook!);  // Values are log(trbf_scale)
 
-    for (let i = 0; i < count; i++) {
-        const o = i * 4;
-        // trbf_center: direct 16-bit quantization
-        trbf_center[i] = dequantize16bit(trbfLRgba[o], trbfURgba[o], meta.trbf.center_min, meta.trbf.center_max);
-        // trbf_scale: stored as log, need to exp
-        const scaleLog = dequantize16bit(trbfLRgba[o + 1], trbfURgba[o + 1], meta.trbf.scale_min, meta.trbf.scale_max);
-        trbf_scale[i] = Math.exp(scaleLog);
+        for (let i = 0; i < count; i++) {
+            const o = i * 4;
+            trbf_center[i] = centerCodebook[trbfRgba[o]];
+            // scale_codebook contains log(trbf_scale), need to exp
+            trbf_scale[i] = Math.exp(scaleCodebook[trbfRgba[o + 1]]);
+        }
+    } else if (trbfL && trbfU) {
+        // 16-bit quantized
+        const trbfLRgba = trbfL.rgba;
+        const trbfURgba = trbfU.rgba;
+
+        for (let i = 0; i < count; i++) {
+            const o = i * 4;
+            // trbf_center: direct 16-bit quantization
+            trbf_center[i] = dequantize16bit(trbfLRgba[o], trbfURgba[o], meta.trbf.center_min!, meta.trbf.center_max!);
+            // trbf_scale: stored as log, need to exp
+            const scaleLog = dequantize16bit(trbfLRgba[o + 1], trbfURgba[o + 1], meta.trbf.scale_min!, meta.trbf.scale_max!);
+            trbf_scale[i] = Math.exp(scaleLog);
+        }
     }
 
     // Build GSplatData
@@ -408,7 +441,13 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
     };
 
     // Diagnostic output
-    console.log(`📊 TRBF center range: [${meta.trbf.center_min.toFixed(3)}, ${meta.trbf.center_max.toFixed(3)}]`);
+    if (meta.trbf.encoding === 'kmeans') {
+        const centerMin = Math.min(...meta.trbf.center_codebook!);
+        const centerMax = Math.max(...meta.trbf.center_codebook!);
+        console.log(`📊 TRBF center range (k-means): [${centerMin.toFixed(3)}, ${centerMax.toFixed(3)}]`);
+    } else {
+        console.log(`📊 TRBF center range: [${meta.trbf.center_min!.toFixed(3)}, ${meta.trbf.center_max!.toFixed(3)}]`);
+    }
     console.log(`📊 Manifest: start=${meta.start.toFixed(3)}, duration=${meta.duration.toFixed(3)}, fps=${meta.fps}`);
 
     // Create asset

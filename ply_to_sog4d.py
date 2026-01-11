@@ -32,6 +32,12 @@ except ImportError:
 
 
 # =============================================================================
+# Constants
+# =============================================================================
+
+
+
+# =============================================================================
 # cfg_args parsing
 # =============================================================================
 
@@ -176,6 +182,75 @@ def load_ply_dynamic(ply_path: str, sh_degree: int, max_splats: Optional[int] = 
 
     print(f"Loaded {num} splats")
     return SplatData(num=num, sh_degree=sh_degree, fields=fields)
+
+
+# =============================================================================
+# Filter low opacity splats
+# =============================================================================
+
+def filter_low_opacity_splats(data: SplatData, cfg: Dict[str, float], opacity_threshold: float) -> SplatData:
+    """
+    Remove splats that have max dynamic opacity < opacity_threshold across all frames.
+    
+    Dynamic opacity = sigmoid(opacity_logit) * exp(-((t - trbf_center) / trbf_scale)^2)
+    
+    Uses PyTorch for vectorized computation.
+    """
+    if torch is None:
+        print("\nWARNING: torch not found. Skipping low opacity filtering.")
+        print("Install torch for this feature: pip install torch")
+        return data
+    
+    print(f"\nFiltering splats with max opacity < {opacity_threshold}...")
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"  Using device: {device}")
+    
+    # Get parameters
+    opacity_logit = torch.from_numpy(data.fields['opacity']).to(device).squeeze()
+    tc = torch.from_numpy(data.fields['trbf_center']).to(device).squeeze()
+    ts = torch.from_numpy(data.fields['trbf_scale']).to(device).squeeze()
+    
+    start = float(cfg.get('start', 0.0))
+    duration = float(cfg.get('duration', 0.0))
+    fps = float(cfg.get('fps', 30.0))
+    
+    # Sample all time points
+    num_frames = int(duration * fps)
+    sample_times = torch.linspace(start, start + duration, num_frames, device=device)
+    
+    print(f"  Sampling {num_frames} frames...")
+    
+    # Compute max opacity for each splat across all frames
+    # Shape: [num_frames, num_splats]
+    dt = sample_times.view(-1, 1) - tc.view(1, -1)  # [F, N]
+    dt_scaled = dt / torch.clamp(ts.view(1, -1), min=1e-6)  # [F, N]
+    trbf_gauss = torch.exp(-dt_scaled * dt_scaled)  # [F, N]
+    
+    base_opacity = torch.sigmoid(opacity_logit).view(1, -1)  # [1, N]
+    dyn_opacity = base_opacity * trbf_gauss  # [F, N]
+    
+    # Get max opacity for each splat
+    max_opacity, _ = torch.max(dyn_opacity, dim=0)  # [N]
+    
+    # Find splats to keep
+    keep_mask = max_opacity >= opacity_threshold
+    keep_indices = torch.where(keep_mask)[0].cpu().numpy()
+    
+    num_removed = data.num - len(keep_indices)
+    print(f"  Keeping {len(keep_indices)} splats, removing {num_removed} ({100*num_removed/data.num:.1f}%)")
+    
+    if num_removed == 0:
+        return data
+    
+    # Filter all fields
+    filtered_fields = {k: v[keep_indices] for k, v in data.fields.items()}
+    
+    return SplatData(
+        num=len(keep_indices),
+        sh_degree=data.sh_degree,
+        fields=filtered_fields
+    )
 
 
 # =============================================================================
@@ -563,6 +638,7 @@ def encode_trbf(data: SplatData, indices: np.ndarray, width: int, height: int) -
     webp_u = encode_webp_lossless(trbf_u.flatten(), width, height)
 
     meta = {
+        'encoding': 'quantize16',
         'center_min': tc_min,
         'center_max': tc_max,
         'scale_min': ts_min,  # This is log(trbf_scale)
@@ -571,6 +647,74 @@ def encode_trbf(data: SplatData, indices: np.ndarray, width: int, height: int) -
     }
 
     return webp_l, webp_u, meta
+
+
+def encode_trbf_kmeans(data: SplatData, indices: np.ndarray, width: int, height: int,
+                       n_clusters: int = 256) -> Tuple[bytes, Dict]:
+    """Encode TRBF parameters using k-means clustering (higher compression ratio)."""
+    print("  Encoding TRBF parameters (k-means clustering)...")
+
+    tc = data.fields['trbf_center'][indices]
+    ts = data.fields['trbf_scale'][indices]
+
+    # Apply log transform to trbf_scale for better distribution
+    ts_log = np.log(np.maximum(ts, 1e-8))
+
+    # K-means clustering for trbf_center
+    tc_reshaped = tc.reshape(-1, 1)
+    kmeans_tc = KMeans(n_clusters=n_clusters, random_state=0, n_init='auto')
+    kmeans_tc.fit(tc_reshaped)
+    
+    # Sort centroids for better compression
+    centroids_tc = kmeans_tc.cluster_centers_.flatten()
+    sort_order_tc = np.argsort(centroids_tc)
+    centroids_tc_sorted = centroids_tc[sort_order_tc]
+    
+    # Create inverse mapping
+    inv_order_tc = np.empty_like(sort_order_tc)
+    inv_order_tc[sort_order_tc] = np.arange(len(sort_order_tc))
+    
+    # Assign labels
+    labels_tc = kmeans_tc.predict(tc_reshaped)
+    labels_tc = inv_order_tc[labels_tc].astype(np.uint8)
+
+    # K-means clustering for trbf_scale (log space)
+    ts_reshaped = ts_log.reshape(-1, 1)
+    kmeans_ts = KMeans(n_clusters=n_clusters, random_state=0, n_init='auto')
+    kmeans_ts.fit(ts_reshaped)
+    
+    # Sort centroids
+    centroids_ts = kmeans_ts.cluster_centers_.flatten()
+    sort_order_ts = np.argsort(centroids_ts)
+    centroids_ts_sorted = centroids_ts[sort_order_ts]
+    
+    # Create inverse mapping
+    inv_order_ts = np.empty_like(sort_order_ts)
+    inv_order_ts[sort_order_ts] = np.arange(len(sort_order_ts))
+    
+    # Assign labels
+    labels_ts = kmeans_ts.predict(ts_reshaped)
+    labels_ts = inv_order_ts[labels_ts].astype(np.uint8)
+
+    # Pack into single RGBA texture (RG channels used, BA unused)
+    n = len(indices)
+    tex_size = width * height
+    trbf_tex = np.zeros((tex_size, 4), dtype=np.uint8)
+    trbf_tex[:n, 0] = labels_tc
+    trbf_tex[:n, 1] = labels_ts
+    trbf_tex[:n, 2] = 0
+    trbf_tex[:n, 3] = 255
+
+    webp = encode_webp_lossless(trbf_tex.flatten(), width, height)
+
+    meta = {
+        'encoding': 'kmeans',
+        'center_codebook': centroids_tc_sorted.tolist(),
+        'scale_codebook': centroids_ts_sorted.tolist(),  # Values are log(trbf_scale)
+        'files': ['trbf.webp']
+    }
+
+    return webp, meta
 
 
 # =============================================================================
@@ -659,8 +803,18 @@ def compute_segments(data: SplatData, cfg: Dict[str, float], segment_duration: f
 # =============================================================================
 
 def write_sog4d(output_path: str, data: SplatData, cfg: Dict[str, float],
-                segment_duration: float, opacity_threshold: float):
-    """Write compressed .sog4d file."""
+                segment_duration: float, opacity_threshold: float, trbf_kmeans: bool = True):
+    """Write compressed .sog4d file.
+    
+    Args:
+        output_path: Output file path
+        data: Splat data
+        cfg: Config with start, duration, fps
+        segment_duration: Duration of each segment in seconds
+        opacity_threshold: Opacity threshold for segment computation
+        trbf_kmeans: If True, use k-means clustering for TRBF (better compression).
+                     If False, use 16-bit quantization (higher precision).
+    """
 
     print("\nSorting by Morton order...")
     indices = sort_morton_order(data)
@@ -676,7 +830,12 @@ def write_sog4d(output_path: str, data: SplatData, cfg: Dict[str, float],
     scales, scales_meta = encode_scales(data, indices, width, height)
     sh0, sh0_meta = encode_sh0(data, indices, width, height)
     motion_l, motion_u, motion_meta = encode_motion(data, indices, width, height)
-    trbf_l, trbf_u, trbf_meta = encode_trbf(data, indices, width, height)
+    
+    # TRBF encoding: k-means (default) or 16-bit quantization
+    if trbf_kmeans:
+        trbf_data, trbf_meta = encode_trbf_kmeans(data, indices, width, height)
+    else:
+        trbf_l, trbf_u, trbf_meta = encode_trbf(data, indices, width, height)
 
     # Compute segments (pass morton indices for correct index mapping)
     segments = compute_segments(data, cfg, segment_duration, opacity_threshold, indices)
@@ -728,8 +887,13 @@ def write_sog4d(output_path: str, data: SplatData, cfg: Dict[str, float],
         # Dynamic gaussian textures
         zf.writestr('motion_l.webp', motion_l)
         zf.writestr('motion_u.webp', motion_u)
-        zf.writestr('trbf_l.webp', trbf_l)
-        zf.writestr('trbf_u.webp', trbf_u)
+        
+        # TRBF textures (different files depending on encoding mode)
+        if trbf_kmeans:
+            zf.writestr('trbf.webp', trbf_data)
+        else:
+            zf.writestr('trbf_l.webp', trbf_l)
+            zf.writestr('trbf_u.webp', trbf_u)
 
         # Segments
         for i, (_, indices_bytes) in enumerate(segments):
@@ -764,8 +928,12 @@ def main():
                         help='Random seed for --max_splats sampling')
     parser.add_argument('--segment_duration', type=float, default=0.5,
                         help='Duration of each segment in seconds (default: 0.5)')
-    parser.add_argument('--opacity_threshold', type=float, default=0.005,
+    parser.add_argument('--opacity_threshold', type=float, default=0.001,
                         help='Opacity threshold to consider a splat active (default: 0.005)')
+    parser.add_argument('--no-trbf-kmeans', action='store_true',
+                        help='Disable k-means clustering for TRBF (use 16-bit quantization instead)')
+    parser.add_argument('--no-filter', action='store_true',
+                        help='Disable filtering of low opacity splats')
 
     args = parser.parse_args()
 
@@ -780,13 +948,19 @@ def main():
     max_splats = args.max_splats if args.max_splats > 0 else None
     data = load_ply_dynamic(args.ply, sh_degree=sh_degree, max_splats=max_splats, seed=args.seed)
 
+    # Filter out low opacity splats (those invisible across all frames)
+    if not args.no_filter:
+        opacity_threshold = args.opacity_threshold
+        data = filter_low_opacity_splats(data, cfg, opacity_threshold)
+
     # Ensure output has .sog4d extension
     output_path = args.output
     if not output_path.lower().endswith('.sog4d'):
         output_path += '.sog4d'
 
     # Write sog4d
-    write_sog4d(output_path, data, cfg, args.segment_duration, args.opacity_threshold)
+    trbf_kmeans = not getattr(args, 'no_trbf_kmeans', False)
+    write_sog4d(output_path, data, cfg, args.segment_duration, args.opacity_threshold, trbf_kmeans)
 
     print("\nDone!")
 
