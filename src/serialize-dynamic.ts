@@ -5,6 +5,7 @@
 
 import { GSplatData } from 'playcanvas';
 import { Splat } from './splat';
+import { State } from './splat-state';
 import type { DynamicExportOptions } from './ui/dynamic-export-dialog';
 import type { DynManifest } from './loaders/dyn';
 
@@ -116,6 +117,7 @@ const sortMortonOrder = (
 
 /**
  * Compute which splat indices are visible within the given time range
+ * Also filters out deleted splats (respects user edits)
  */
 const computeVisibleIndices = (
     splatData: GSplatData,
@@ -127,6 +129,7 @@ const computeVisibleIndices = (
     const trbfCenter = splatData.getProp('trbf_center') as Float32Array;
     const trbfScale = splatData.getProp('trbf_scale') as Float32Array;
     const opacity = splatData.getProp('opacity') as Float32Array;
+    const state = splatData.getProp('state') as Uint8Array | null;
     
     if (!trbfCenter || !trbfScale || !opacity) {
         throw new Error('Missing dynamic properties');
@@ -146,6 +149,11 @@ const computeVisibleIndices = (
     const visibleIndices: number[] = [];
     
     for (let i = 0; i < numSplats; i++) {
+        // Skip deleted splats (respect user edits)
+        if (state && (state[i] & State.deleted) !== 0) {
+            continue;
+        }
+        
         const tc = trbfCenter[i];
         const ts = trbfScale[i];  // Already exp-converted
         const opLogit = opacity[i];

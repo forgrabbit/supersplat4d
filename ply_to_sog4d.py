@@ -42,15 +42,21 @@ except ImportError:
 # =============================================================================
 
 def parse_cfg_args_text(text: str) -> Dict[str, float]:
-    """Parse strings like: Namespace(duration=2.0, start=2.0, fps=30.0, sh_degree=0)"""
+    """Parse cfg_args from two formats:
+    1. Old format: Namespace(duration=2.0, start=2.0, fps=30.0, sh_degree=0)
+    2. New format: duration=2.0 start=2.0 fps=30.0 sh_degree=0
+    """
     text = text.strip()
-    if not text.startswith('Namespace(') or not text.endswith(')'):
-        raise ValueError(f"Unrecognized cfg_args format: {text[:200]}")
-
-    content = text[len('Namespace('):-1]
-
     out: Dict[str, float] = {}
-    parts = content.split(',')
+    
+    # Try old Namespace format first
+    if text.startswith('Namespace(') and text.endswith(')'):
+        content = text[len('Namespace('):-1]
+        parts = content.split(',')
+    else:
+        # New format: space or comma separated key=value pairs
+        parts = text.replace(',', ' ').split()
+    
     for part in parts:
         part = part.strip()
         if '=' not in part:
@@ -74,6 +80,48 @@ def parse_cfg_args_text(text: str) -> Dict[str, float]:
         raise ValueError(f"Could not parse required keys {missing} from cfg_args. Found: {list(out.keys())}")
 
     return out
+
+
+def extract_cfg_args_from_ply(ply_path: str) -> Optional[Dict[str, float]]:
+    """Extract cfg_args from PLY header comment.
+    
+    Looks for a comment line like:
+        comment cfg_args: duration=2.0 start=2.0 fps=30.0 sh_degree=0
+    
+    Returns None if not found.
+    """
+    try:
+        with open(ply_path, 'rb') as f:
+            # Read header (PLY header ends with "end_header\n")
+            header_lines = []
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+                try:
+                    line_str = line.decode('utf-8').strip()
+                except:
+                    line_str = line.decode('latin-1').strip()
+                
+                header_lines.append(line_str)
+                if line_str == 'end_header':
+                    break
+            
+            # Look for "comment cfg_args: ..." line
+            for line in header_lines:
+                if line.startswith('comment') and 'cfg_args:' in line:
+                    # Extract the part after "cfg_args:"
+                    idx = line.index('cfg_args:')
+                    cfg_text = line[idx + len('cfg_args:'):].strip()
+                    
+                    if cfg_text:
+                        print(f"Found cfg_args in PLY header: {cfg_text}")
+                        return parse_cfg_args_text(cfg_text)
+            
+            return None
+    except Exception as e:
+        print(f"Warning: Could not extract cfg_args from PLY header: {e}")
+        return None
 
 
 # =============================================================================
@@ -916,8 +964,9 @@ def main():
     parser = argparse.ArgumentParser(
         description='Convert dynamic gaussian PLY to compressed .sog4d format'
     )
-    parser.add_argument('--cfg_args', required=True,
-                        help='Path to cfg_args file (contains start, duration, fps, sh_degree)')
+    parser.add_argument('--cfg_args', required=False,
+                        help='Path to cfg_args file (contains start, duration, fps, sh_degree). '
+                             'If not provided, will try to read from PLY header comment.')
     parser.add_argument('--ply', required=True,
                         help='Path to point_cloud.ply (dynamic gaussian)')
     parser.add_argument('--output', '-o', required=True,
@@ -937,10 +986,30 @@ def main():
 
     args = parser.parse_args()
 
-    # Parse cfg_args
-    with open(args.cfg_args, 'r', encoding='utf-8') as f:
-        cfg_text = f.read()
-    cfg = parse_cfg_args_text(cfg_text)
+    # Parse cfg_args - try PLY header first, then fallback to file
+    cfg = None
+    
+    # Try to extract from PLY header first
+    print("Checking PLY header for cfg_args...")
+    cfg = extract_cfg_args_from_ply(args.ply)
+    
+    # If not found in header, try cfg_args file
+    if cfg is None and args.cfg_args:
+        print(f"Reading cfg_args from file: {args.cfg_args}")
+        with open(args.cfg_args, 'r', encoding='utf-8') as f:
+            cfg_text = f.read()
+        cfg = parse_cfg_args_text(cfg_text)
+    
+    # If still not found, error
+    if cfg is None:
+        raise ValueError(
+            "ERROR: Could not find cfg_args!\n\n"
+            "Please either:\n"
+            "  1. Add a comment in your PLY header like:\n"
+            "     comment cfg_args: duration=2.0 start=2.0 fps=30.0 sh_degree=0\n"
+            "  OR\n"
+            "  2. Provide --cfg_args argument pointing to a cfg_args file\n"
+        )
 
     sh_degree = int(cfg.get('sh_degree', 0))
 
@@ -969,4 +1038,11 @@ if __name__ == '__main__':
     main()
 
 # Example usage:
-# python ply_to_sog4d.py --cfg_args "path/to/cfg_args" --ply "path/to/point_cloud.ply" -o "output.sog4d"
+# Method 1: Using cfg_args in PLY header (recommended)
+#   Add this line to your PLY header:
+#     comment cfg_args: duration=2.0 start=2.0 fps=30.0 sh_degree=0
+#   Then run:
+#     python ply_to_sog4d.py --ply "path/to/point_cloud.ply" -o "output.sog4d"
+#
+# Method 2: Using separate cfg_args file
+#   python ply_to_sog4d.py --cfg_args "path/to/cfg_args" --ply "path/to/point_cloud.ply" -o "output.sog4d"
