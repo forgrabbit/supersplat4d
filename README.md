@@ -14,7 +14,7 @@ A live version of this tool is available at: https://supersplat4d.netlify.app/
   - **.sog4d**: Highly compressed dynamic splat format using k-means clustering and WebP.
   - **.ply**: Direct loading of dynamic PLY files containing `trbf_center`, `trbf_scale`, and `motion` attributes.
 - **Dynamic Editing**:
-  - Select and delete瑕疵 (artifacts) or unwanted splats across the entire animation.
+  - Select and delete artifacts or unwanted splats across the entire animation.
   - Filter splats based on dynamic opacity.
 - **Export Capabilities**:
   - Export edited dynamic scenes back to `.ply` or `.sog4d`.
