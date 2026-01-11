@@ -275,16 +275,32 @@ const main = async () => {
     // handle load params
     const loadList = url.searchParams.getAll('load');
     const filenameList = url.searchParams.getAll('filename');
-    for (const [i, value] of loadList.entries()) {
-        const decoded = decodeURIComponent(value);
-        const filename = i < filenameList.length ?
-            decodeURIComponent(filenameList[i]) :
-            decoded.split('/').pop();
+    
+    if (loadList.length > 0) {
+        // Load from URL params
+        for (const [i, value] of loadList.entries()) {
+            const decoded = decodeURIComponent(value);
+            const filename = i < filenameList.length ?
+                decodeURIComponent(filenameList[i]) :
+                decoded.split('/').pop();
 
-        await events.invoke('import', [{
-            filename,
-            url: decoded
-        }]);
+            await events.invoke('import', [{
+                filename,
+                url: decoded
+            }]);
+        }
+    } else {
+        // Auto-load demo data if no URL params
+        console.log('🎬 Auto-loading demo 4D Gaussian Splat...');
+        try {
+            await events.invoke('import', [{
+                filename: 'demo.dyn.json',
+                url: './demo/scene.dyn.json'
+            }]);
+            console.log('✅ Demo data loaded successfully');
+        } catch (error) {
+            console.warn('⚠️ Failed to auto-load demo data:', error);
+        }
     }
 
 

@@ -44,8 +44,12 @@ const application = {
     output: {
         dir: 'dist',
         format: 'esm',
-        sourcemap: true
+        sourcemap: true,
+        globals: {
+            'jszip': 'JSZip'
+        }
     },
+    external: ['jszip'],
     plugins: [
         copyAndWatch({
             targets: [

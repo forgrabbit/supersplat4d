@@ -1,5 +1,26 @@
-node_modules
-dist
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+!dist/demo/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
 .DS_Store
-.npmrc
-.vscode
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+DEPLOYMENT.md
+README_DEPLOYMENT_CN.md
+
+# Environment
+.env
+.env.local

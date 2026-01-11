@@ -88,6 +88,7 @@ class Splat extends Element {
     isDynamic = false;
     dynManifest: DynManifest | null = null;
     dynBaseUrl = '';
+    sog4dSegments: Map<string, ArrayBuffer> | null = null;  // Preloaded segments from SOG4D
     
     // Segment management
     segmentCache = new Map<number, Uint32Array>();
@@ -131,6 +132,10 @@ class Splat extends Element {
             this.isDynamic = true;
             this.dynManifest = (resource as any).dynManifest as DynManifest;
             this.dynBaseUrl = (resource as any).dynBaseUrl || '';
+            // Check for preloaded SOG4D segments
+            if ((resource as any).sog4dSegments) {
+                this.sog4dSegments = (resource as any).sog4dSegments as Map<string, ArrayBuffer>;
+            }
         }
 
         this.entity = new Entity('splatEntitiy');
@@ -488,13 +493,22 @@ class Splat extends Element {
         const segment = this.dynManifest.segments[segmentIndex];
 
         try {
-            const segmentUrl = this.dynBaseUrl + segment.url;
-            const response = await fetch(segmentUrl);
-            if (!response.ok) {
-                throw new Error(`Failed to load segment ${segmentIndex}: ${response.statusText}`);
+            let arrayBuffer: ArrayBuffer;
+
+            // Check if we have preloaded SOG4D segments
+            if (this.sog4dSegments && this.sog4dSegments.has(segment.url)) {
+                // Use preloaded data from SOG4D
+                arrayBuffer = this.sog4dSegments.get(segment.url)!;
+            } else {
+                // Fetch from network (for .dyn.json format)
+                const segmentUrl = this.dynBaseUrl + segment.url;
+                const response = await fetch(segmentUrl);
+                if (!response.ok) {
+                    throw new Error(`Failed to load segment ${segmentIndex}: ${response.statusText}`);
+                }
+                arrayBuffer = await response.arrayBuffer();
             }
 
-            const arrayBuffer = await response.arrayBuffer();
             const indices = new Uint32Array(arrayBuffer);
             
             // Validate indices are within range

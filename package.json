@@ -1,6 +1,6 @@
 {
     "name": "supersplat",
-    "version": "2.16.5",
+    "version": "2.16.6",
     "author": "PlayCanvas<support@playcanvas.com>",
     "homepage": "https://playcanvas.com/supersplat/editor",
     "description": "3D Gaussian Splat Editor",
@@ -15,6 +15,7 @@
     "main": "index.js",
     "scripts": {
         "build": "rollup -c",
+        "build:demo": "npm run build && node scripts/copy-demo.js",
         "watch": "rollup -c -w",
         "serve": "serve dist -C",
         "develop": "cross-env BUILD_TYPE=debug concurrently --kill-others \"npm run watch\" \"npm run serve\"",

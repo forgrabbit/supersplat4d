@@ -5,6 +5,7 @@ import { AssetSource } from './loaders/asset-source';
 import { loadDyn } from './loaders/dyn';
 import { loadGsplat } from './loaders/gsplat';
 import { loadLcc } from './loaders/lcc';
+import { loadSog4d } from './loaders/sog4d';
 import { loadSplat } from './loaders/splat';
 import { Splat } from './splat';
 
@@ -52,6 +53,8 @@ class AssetLoader {
                 orientation = lccOrientation;
             } else if (filename.endsWith('.dyn.json')) {
                 asset = await loadDyn(this.app.assets, assetSource, this.app.graphicsDevice);
+            } else if (filename.endsWith('.sog4d')) {
+                asset = await loadSog4d(this.app.assets, assetSource, this.app.graphicsDevice);
             } else {
                 asset = await loadGsplat(this.app.assets, assetSource);
             }

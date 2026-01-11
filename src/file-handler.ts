@@ -49,6 +49,12 @@ const filePickerTypes: { [key: string]: FilePickerAcceptType } = {
             'image/webp': ['.webp']
         }
     },
+    'sog4d': {
+        description: 'SOG4D Dynamic Scene',
+        accept: {
+            'application/x-gaussian-splat': ['.sog4d']
+        }
+    },
     'lcc': {
         description: 'LCC Scene',
         accept: {
@@ -86,7 +92,7 @@ const allImportTypes = {
     description: 'Supported Files',
     accept: {
         'application/ply': ['.ply'],
-        'application/x-gaussian-splat': ['.json', '.sog', '.splat'],
+        'application/x-gaussian-splat': ['.json', '.sog', '.sog4d', '.splat'],
         'image/webp': ['.webp'],
         'application/json': ['.lcc'],
         'application/octet-stream': ['.bin'],
@@ -348,7 +354,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             // check for unrecognized file types
             for (let i = 0; i < filenames.length; i++) {
                 const filename = filenames[i].toLowerCase();
-                if (['.ssproj', '.ply', '.splat', '.sog', '.webp', 'images.txt', '.json'].every(ext => !filename.endsWith(ext))) {
+                if (['.ssproj', '.ply', '.splat', '.sog', '.sog4d', '.webp', 'images.txt', '.json'].every(ext => !filename.endsWith(ext))) {
                     await showLoadError('Unrecognized file type', filename);
                     return;
                 }
@@ -361,7 +367,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 if (filename.endsWith('.ssproj')) {
                     // load ssproj document
                     await events.invoke('doc.load', files[i].contents ?? (await fetch(files[i].url)).arrayBuffer(), files[i].handle);
-                } else if (filename.endsWith('.dyn.json')) {
+                } else if (filename.endsWith('.dyn.json') || filename.endsWith('.sog4d')) {
                     // load dynamic gaussian splat model
                     result.push(await importFile(files[i], animationFrame));
                 } else if (['.ply', '.splat', '.sog'].some(ext => filename.endsWith(ext))) {
@@ -390,7 +396,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         fileSelector = document.createElement('input');
         fileSelector.setAttribute('id', 'file-selector');
         fileSelector.setAttribute('type', 'file');
-        fileSelector.setAttribute('accept', '.ply,.splat,meta.json,.json,.webp,.ssproj,.sog,.lcc,.bin,.txt');
+        fileSelector.setAttribute('accept', '.ply,.splat,meta.json,.json,.webp,.ssproj,.sog,.sog4d,.lcc,.bin,.txt');
         fileSelector.setAttribute('multiple', 'true');
 
         fileSelector.onchange = () => {
@@ -453,6 +459,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                         filePickerTypes.compressedPly,
                         filePickerTypes.splat,
                         filePickerTypes.sog,
+                        filePickerTypes.sog4d,
                         filePickerTypes.lcc,
                         filePickerTypes.indexTxt
                     ]
