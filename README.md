@@ -35,13 +35,19 @@ The script can read `cfg_args` directly from the PLY header if it contains a lin
 
 To initialize a local development environment, ensure you have [Node.js](https://nodejs.org/) 18 or later installed.
 
-1. Clone and install:
+1. Clone and switch branch:
    ```sh
-   git install
+   git clone https://github.com/playcanvas/supersplat.git
+   cd supersplat
+   git checkout splat4d
+   ```
+
+2. Install dependencies:
+   ```sh
    npm install
    ```
 
-2. Run development server:
+3. Run development server:
    ```sh
    npm run develop
    ```
