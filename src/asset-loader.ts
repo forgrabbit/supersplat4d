@@ -3,6 +3,7 @@ import { AppBase, Asset, GSplatData, GSplatResource, Vec3 } from 'playcanvas';
 import { Events } from './events';
 import { AssetSource } from './loaders/asset-source';
 import { loadDyn } from './loaders/dyn';
+import { checkPlyIsDynamic, loadDynamicPly, DynamicPlyParams } from './loaders/dynamic-ply';
 import { loadGsplat } from './loaders/gsplat';
 import { loadLcc } from './loaders/lcc';
 import { loadSog4d } from './loaders/sog4d';
@@ -55,6 +56,33 @@ class AssetLoader {
                 asset = await loadDyn(this.app.assets, assetSource, this.app.graphicsDevice);
             } else if (filename.endsWith('.sog4d')) {
                 asset = await loadSog4d(this.app.assets, assetSource, this.app.graphicsDevice);
+            } else if (filename.endsWith('.ply')) {
+                // Check if PLY is dynamic (has trbf_center, trbf_scale, motion_*)
+                const { isDynamic, cfgArgs } = await checkPlyIsDynamic(assetSource);
+                
+                if (isDynamic) {
+                    let params: DynamicPlyParams | null = cfgArgs;
+                    
+                    // If no cfg_args in PLY header, ask user for parameters
+                    if (!params) {
+                        // Hide spinner while dialog is shown
+                        this.events.fire('stopSpinner');
+                        params = await this.events.invoke('showDynamicParamsDialog', assetSource.filename || 'unknown.ply');
+                        this.events.fire('startSpinner');
+                    }
+                    
+                    if (params) {
+                        console.log('📊 Loading dynamic PLY with params:', params);
+                        asset = await loadDynamicPly(this.app.assets, assetSource, params);
+                    } else {
+                        // User cancelled, load as static
+                        console.log('⚠️ User cancelled dynamic params dialog, loading as static PLY');
+                        asset = await loadGsplat(this.app.assets, assetSource);
+                    }
+                } else {
+                    // Not dynamic, load as regular PLY
+                    asset = await loadGsplat(this.app.assets, assetSource);
+                }
             } else {
                 asset = await loadGsplat(this.app.assets, assetSource);
             }

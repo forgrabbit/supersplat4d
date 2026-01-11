@@ -5,6 +5,7 @@ import { DataPanel } from './data-panel';
 import { Events } from '../events';
 import { BottomToolbar } from './bottom-toolbar';
 import { ColorPanel } from './color-panel';
+import { DynamicParamsDialog } from './dynamic-params-dialog';
 import { ExportPopup } from './export-popup';
 import { ImageSettingsDialog } from './image-settings-dialog';
 import { localize, localizeInit } from './localization';
@@ -179,11 +180,15 @@ class EditorUI {
         // video settings
         const videoSettingsDialog = new VideoSettingsDialog(events);
 
+        // dynamic params dialog
+        const dynamicParamsDialog = new DynamicParamsDialog(events);
+
         topContainer.append(popup);
         topContainer.append(exportPopup);
         topContainer.append(publishSettingsDialog);
         topContainer.append(imageSettingsDialog);
         topContainer.append(videoSettingsDialog);
+        topContainer.append(dynamicParamsDialog);
 
         appContainer.append(editorContainer);
         appContainer.append(topContainer);
@@ -324,6 +329,11 @@ class EditorUI {
 
         events.function('showPopup', (options: ShowOptions) => {
             return this.popup.show(options);
+        });
+
+        // dynamic params dialog for PLY files without cfg_args
+        events.function('showDynamicParamsDialog', (filename: string) => {
+            return dynamicParamsDialog.show(filename);
         });
 
         // spinner
