@@ -46,7 +46,13 @@ class MobileToolbar extends Container {
             id: 'mobile-toolbar-gyroscope',
             class: 'mobile-toolbar-button'
         });
-        gyroscopeButton.dom.appendChild(createSvg(gyroscopeSvg));
+        const gyroscopeSvgElement = createSvg(gyroscopeSvg);
+        // Set explicit size for gyroscope icon
+        gyroscopeSvgElement.style.width = '24px';
+        gyroscopeSvgElement.style.height = '24px';
+        gyroscopeSvgElement.style.minWidth = '24px';
+        gyroscopeSvgElement.style.minHeight = '24px';
+        gyroscopeButton.dom.appendChild(gyroscopeSvgElement);
         const gyroscopeLabel = document.createElement('span');
         gyroscopeLabel.textContent = 'Gyroscope';
         gyroscopeButton.dom.appendChild(gyroscopeLabel);
@@ -77,8 +83,11 @@ class MobileToolbar extends Container {
             class: 'mobile-toolbar-button'
         });
         const highPrecisionSvg = createSvg(colorPanelSvg);
+        // Set explicit size for high precision icon
         highPrecisionSvg.style.width = '24px';
         highPrecisionSvg.style.height = '24px';
+        highPrecisionSvg.style.minWidth = '24px';
+        highPrecisionSvg.style.minHeight = '24px';
         highPrecisionButton.dom.appendChild(highPrecisionSvg);
         const highPrecisionLabel = document.createElement('span');
         highPrecisionLabel.textContent = 'High Precision';

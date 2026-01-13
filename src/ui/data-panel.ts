@@ -333,8 +333,8 @@ class DataPanel extends Panel {
         // create rect element
         const rect = document.createElementNS(svg.namespaceURI, 'rect') as SVGRectElement;
         rect.setAttribute('id', 'highlight-rect');
-        rect.setAttribute('fill', 'rgba(255, 102, 0, 0.2)');
-        rect.setAttribute('stroke', '#f60');
+        rect.setAttribute('fill', 'rgba(147, 126, 226, 0.2)');
+        rect.setAttribute('stroke', '#937EE2');
         rect.setAttribute('stroke-width', '1');
         rect.setAttribute('stroke-dasharray', '5, 5');
 

@@ -191,8 +191,9 @@ class GyroscopeController {
         // Map device orientation to camera:
         // - Gamma (left-right tilt): affects camera azimuth (horizontal rotation)
         // - Beta (front-back tilt): affects camera elevation (vertical rotation)
+        // Note: When device tilts forward (beta increases), user expects to see model top (elev increases)
         const newAzim = this.initialCameraAzim - deltaGamma;
-        const newElev = this.initialCameraElev + deltaBeta;
+        const newElev = this.initialCameraElev - deltaBeta;
 
         // Update camera orientation with minimal damping for responsiveness
         this.camera.setAzimElev(newAzim, newElev, 0.5);

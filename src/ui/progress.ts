@@ -60,7 +60,7 @@ class Progress extends Container {
         };
 
         this.setProgress = (progress: number) => {
-            bar.dom.style.backgroundImage = `linear-gradient(90deg, #F60 0%, #F60 ${progress}%, #00000000 ${progress}%, #00000000 100%)`;
+            bar.dom.style.backgroundImage = `linear-gradient(90deg, #937EE2 0%, #937EE2 ${progress}%, #00000000 ${progress}%, #00000000 100%)`;
         };
     }
 }
