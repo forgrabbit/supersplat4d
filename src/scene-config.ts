@@ -18,12 +18,12 @@ const sceneConfig = {
         exposure: 1.0,
         toneMapping: 'linear',
         debugRender: '',
-        overlay: true,
+        overlay: false,
         highPrecision: true
     },
     show: {
-        grid: true,
-        bound: true,
+        grid: false,
+        bound: false,
         shBands: 3
     },
     controls: {

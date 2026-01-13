@@ -4,8 +4,63 @@
     width: 320px;
 }
 
-.collapsed #scene-panel {
+// Mobile scene panel positioning (below mobile toolbar)
+// Note: top position and width are set dynamically by JavaScript to match toolbar
+#scene-panel.mobile-scene-panel {
+    left: 12px !important;
+    // Width will be set by JavaScript to match toolbar width
+    max-height: calc(100vh - 350px); // Leave space for toolbar and timeline
+    z-index: 999;
+    // Override default top position - will be set by JavaScript
+    top: auto;
+    
+    // Compact styling for mobile
+    .panel-header {
+        padding: 4px 2px; // Reduced padding
+        
+        .panel-header-label {
+            font-size: 11px; // Slightly smaller font
+        }
+        
+        .panel-header-icon {
+            font-size: 12px; // Slightly smaller icon
+        }
+        
+        .panel-header-button {
+            padding: 3px; // Reduced button padding
+            font-size: 12px;
+        }
+    }
+    
+    .splat-list-container {
+        max-height: 250px; // Reduced max height for mobile
+    }
+    
+    // Compact splat list items for mobile
+    .splat-item {
+        padding: 4px 2px; // Reduced padding
+        
+        .splat-item-text {
+            font-size: 11px; // Smaller font
+        }
+        
+        .splat-item-visible,
+        .splat-item-delete {
+            width: 20px;
+            height: 20px;
+            line-height: 20px;
+        }
+    }
+}
+
+// Only hide scene panel when collapsed on desktop, not on mobile
+.collapsed #scene-panel:not(.mobile-scene-panel) {
     display: none;
+}
+
+// Override collapsed rule for mobile scene panel
+#scene-panel.mobile-scene-panel {
+    display: block !important;
 }
 
 .splat-list-container {

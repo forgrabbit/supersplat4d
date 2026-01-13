@@ -74,6 +74,52 @@
             }
         }
     }
+    
+    // Mobile-specific styles
+    &.mobile-timeline {
+        > #controls-wrap {
+            // Ensure proper layout on mobile
+            > #button-controls {
+                // Center the play button
+                justify-content: center;
+                flex-grow: 0;
+                flex-shrink: 0;
+                
+                > .button {
+                    // Make play button slightly larger on mobile for better touch target
+                    width: 44px;
+                    height: 32px;
+                    font-size: 16px;
+                    line-height: 32px;
+                }
+            }
+            
+            > .spacer {
+                // First spacer (left) - empty, just for spacing
+                &:first-of-type {
+                    flex-grow: 1;
+                    flex-basis: 0;
+                }
+                
+                // Last spacer (right) - contains frame rate
+                &:last-of-type {
+                    flex-grow: 0;
+                    flex-shrink: 0;
+                    justify-content: flex-end;
+                    
+                    > #settings-controls {
+                        // Compact frame rate control on mobile
+                        > #speed {
+                            width: 70px !important;
+                            min-width: 70px;
+                            max-width: 70px;
+                            margin: 0 !important;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     > #frame-slider {
         height: 24px;

@@ -1,4 +1,4 @@
-import { Container, Element, Label } from '@playcanvas/pcui';
+import { Container, ContainerArgs, Element, Label } from '@playcanvas/pcui';
 
 import { Events } from '../events';
 import { localize } from './localization';
@@ -14,14 +14,17 @@ const createSvg = (svgString: string) => {
 };
 
 class ScenePanel extends Container {
-    constructor(events: Events, tooltips: Tooltips, args = {}) {
-        args = {
-            ...args,
+    constructor(events: Events, tooltips: Tooltips, args: ContainerArgs & { isMobile?: boolean } = {}) {
+        const isMobile = args.isMobile || false;
+        // Extract isMobile and create clean ContainerArgs without it
+        const { isMobile: _, ...containerArgs } = args;
+        const finalArgs: ContainerArgs = {
+            ...containerArgs,
             id: 'scene-panel',
             class: 'panel'
         };
 
-        super(args);
+        super(finalArgs);
 
         // stop pointer events bubbling
         ['pointerdown', 'pointerup', 'pointermove', 'wheel', 'dblclick'].forEach((eventName) => {
@@ -94,12 +97,16 @@ class ScenePanel extends Container {
 
         this.append(sceneHeader);
         this.append(splatListContainer);
-        this.append(transformHeader);
-        this.append(new Transform(events));
-        this.append(new Element({
-            class: 'panel-header',
-            height: 20
-        }));
+        
+        // Only show transform section on desktop
+        if (!isMobile) {
+            this.append(transformHeader);
+            this.append(new Transform(events));
+            this.append(new Element({
+                class: 'panel-header',
+                height: 20
+            }));
+        }
     }
 }
 

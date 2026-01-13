@@ -3,6 +3,7 @@ import { Mat4, path, Vec3 } from 'playcanvas';
 
 import { DataPanel } from './data-panel';
 import { Events } from '../events';
+import { isMobileDevice } from '../utils/device-detection';
 import { BottomToolbar } from './bottom-toolbar';
 import { ColorPanel } from './color-panel';
 import { DynamicParamsDialog } from './dynamic-params-dialog';
@@ -11,6 +12,7 @@ import { ExportPopup } from './export-popup';
 import { ImageSettingsDialog } from './image-settings-dialog';
 import { localize, localizeInit } from './localization';
 import { Menu } from './menu';
+import { MobileToolbar } from './mobile-toolbar';
 import { ModeToggle } from './mode-toggle';
 import logo from './playcanvas-logo.png';
 import { Popup, ShowOptions } from './popup';
@@ -119,8 +121,11 @@ class EditorUI {
         const tooltips = new Tooltips();
         tooltipsContainer.append(tooltips);
 
+        // Detect mobile device
+        const isMobile = isMobileDevice();
+
         // bottom toolbar
-        const scenePanel = new ScenePanel(events, tooltips);
+        const scenePanel = new ScenePanel(events, tooltips, { isMobile });
         const viewPanel = new ViewPanel(events, tooltips);
         const colorPanel = new ColorPanel(events, tooltips);
         const bottomToolbar = new BottomToolbar(events, tooltips);
@@ -128,36 +133,70 @@ class EditorUI {
         const modeToggle = new ModeToggle(events, tooltips);
         const menu = new Menu(events);
 
+        // Mobile toolbar (only for mobile devices)
+        let mobileToolbar: MobileToolbar | null = null;
+        if (isMobile) {
+            // On mobile, scene panel starts hidden and will show when toolbar expands
+            scenePanel.hidden = true;
+            // Don't add mobile-scene-panel class here, let the toolbar handle it
+            mobileToolbar = new MobileToolbar(events, tooltips, scenePanel);
+        }
+
         canvasContainer.dom.appendChild(canvas);
         canvasContainer.append(appLabel);
         canvasContainer.append(cursorLabel);
         canvasContainer.append(toolsContainer);
         canvasContainer.append(scenePanel);
-        canvasContainer.append(viewPanel);
-        canvasContainer.append(colorPanel);
-        canvasContainer.append(bottomToolbar);
-        canvasContainer.append(rightToolbar);
-        canvasContainer.append(modeToggle);
-        canvasContainer.append(menu);
+        
+        // Conditionally append components based on device type
+        if (isMobile) {
+            // Mobile: only show scene panel and mobile toolbar
+            if (mobileToolbar) {
+                canvasContainer.append(mobileToolbar);
+            }
+            // Hide desktop components
+            viewPanel.hidden = true;
+            colorPanel.hidden = true;
+            bottomToolbar.hidden = true;
+            rightToolbar.hidden = true;
+            modeToggle.hidden = true;
+            menu.hidden = true;
+        } else {
+            // Desktop: show all components
+            canvasContainer.append(viewPanel);
+            canvasContainer.append(colorPanel);
+            canvasContainer.append(bottomToolbar);
+            canvasContainer.append(rightToolbar);
+            canvasContainer.append(modeToggle);
+            canvasContainer.append(menu);
+        }
 
         // view axes container
         const viewCube = new ViewCube(events);
-        canvasContainer.append(viewCube);
-        events.on('prerender', (cameraMatrix: Mat4) => {
-            viewCube.update(cameraMatrix);
-        });
+        if (!isMobile) {
+            canvasContainer.append(viewCube);
+            events.on('prerender', (cameraMatrix: Mat4) => {
+                viewCube.update(cameraMatrix);
+            });
+        }
 
         // main container
         const mainContainer = new Container({
             id: 'main-container'
         });
 
-        const timelinePanel = new TimelinePanel(events, tooltips);
+        const timelinePanel = new TimelinePanel(events, tooltips, { isMobile });
         const dataPanel = new DataPanel(events);
 
         mainContainer.append(canvasContainer);
         mainContainer.append(timelinePanel);
-        mainContainer.append(dataPanel);
+        
+        // Data panel only on desktop
+        if (!isMobile) {
+            mainContainer.append(dataPanel);
+        } else {
+            dataPanel.hidden = true;
+        }
 
         editorContainer.append(mainContainer);
 

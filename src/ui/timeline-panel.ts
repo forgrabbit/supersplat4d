@@ -201,52 +201,71 @@ class Ticks extends Container {
 }
 
 class TimelinePanel extends Container {
-    constructor(events: Events, tooltips: Tooltips, args = {}) {
-        args = {
+    constructor(events: Events, tooltips: Tooltips, args: { isMobile?: boolean } = {}) {
+        const isMobile = args.isMobile || false;
+        const containerArgs = {
             ...args,
             id: 'timeline-panel'
         };
+        // Remove isMobile from containerArgs
+        delete (containerArgs as any).isMobile;
 
-        super(args);
+        super(containerArgs);
+        
+        // Add mobile class for CSS targeting
+        if (isMobile) {
+            this.dom.classList.add('mobile-timeline');
+        }
 
         // play controls
-
-        const prev = new Button({
-            class: 'button',
-            text: '\uE162'
-        });
-
         const play = new Button({
             class: 'button',
             text: '\uE131'
         });
 
-        const next = new Button({
-            class: 'button',
-            text: '\uE164'
-        });
+        // Desktop-only buttons
+        let prev: Button | null = null;
+        let next: Button | null = null;
+        let addKey: Button | null = null;
+        let removeKey: Button | null = null;
 
-        // key controls
+        if (!isMobile) {
+            prev = new Button({
+                class: 'button',
+                text: '\uE162'
+            });
 
-        const addKey = new Button({
-            class: 'button',
-            text: '\uE120'
-        });
+            next = new Button({
+                class: 'button',
+                text: '\uE164'
+            });
 
-        const removeKey = new Button({
-            class: 'button',
-            text: '\uE121',
-            enabled: false
-        });
+            addKey = new Button({
+                class: 'button',
+                text: '\uE120'
+            });
+
+            removeKey = new Button({
+                class: 'button',
+                text: '\uE121',
+                enabled: false
+            });
+        }
 
         const buttonControls = new Container({
             id: 'button-controls'
         });
-        buttonControls.append(prev);
-        buttonControls.append(play);
-        buttonControls.append(next);
-        buttonControls.append(addKey);
-        buttonControls.append(removeKey);
+        
+        // On mobile, only show play button; on desktop, show all buttons
+        if (isMobile) {
+            buttonControls.append(play);
+        } else {
+            buttonControls.append(prev!);
+            buttonControls.append(play);
+            buttonControls.append(next!);
+            buttonControls.append(addKey!);
+            buttonControls.append(removeKey!);
+        }
 
         // settings
 
@@ -271,46 +290,54 @@ class TimelinePanel extends Container {
             speed.value = frameRate.toString();
         });
 
-        const frames = new NumericInput({
-            id: 'totalFrames',
-            value: 180,
-            min: 1,
-            max: 10000,
-            precision: 0
-        });
+        // Desktop-only settings
+        let frames: NumericInput | null = null;
+        let smoothness: NumericInput | null = null;
 
-        frames.on('change', (value: number) => {
-            events.fire('timeline.setFrames', value);
-        });
+        if (!isMobile) {
+            frames = new NumericInput({
+                id: 'totalFrames',
+                value: 180,
+                min: 1,
+                max: 10000,
+                precision: 0
+            });
 
-        events.on('timeline.frames', (framesIn: number) => {
-            frames.value = framesIn;
-        });
+            frames.on('change', (value: number) => {
+                events.fire('timeline.setFrames', value);
+            });
 
-        // smoothness
+            events.on('timeline.frames', (framesIn: number) => {
+                frames!.value = framesIn;
+            });
 
-        const smoothness = new NumericInput({
-            id: 'smoothness',
-            min: 0,
-            max: 1,
-            step: 0.05,
-            value: 1
-        });
+            smoothness = new NumericInput({
+                id: 'smoothness',
+                min: 0,
+                max: 1,
+                step: 0.05,
+                value: 1
+            });
 
-        smoothness.on('change', (value: number) => {
-            events.fire('timeline.setSmoothness', value);
-        });
+            smoothness.on('change', (value: number) => {
+                events.fire('timeline.setSmoothness', value);
+            });
 
-        events.on('timeline.smoothness', (smoothnessIn: number) => {
-            smoothness.value = smoothnessIn;
-        });
+            events.on('timeline.smoothness', (smoothnessIn: number) => {
+                smoothness!.value = smoothnessIn;
+            });
+        }
 
         const settingsControls = new Container({
             id: 'settings-controls'
         });
+        
+        // On mobile, only show frame rate (speed); on desktop, show all settings
         settingsControls.append(speed);
-        settingsControls.append(frames);
-        settingsControls.append(smoothness);
+        if (!isMobile) {
+            settingsControls.append(frames!);
+            settingsControls.append(smoothness!);
+        }
 
         // append control groups
 
@@ -318,15 +345,15 @@ class TimelinePanel extends Container {
             id: 'controls-wrap'
         });
 
+        // Layout: play button in center, settings on right (same for mobile and desktop)
         const spacerL = new Container({
             class: 'spacer'
         });
-
         const spacerR = new Container({
             class: 'spacer'
         });
         spacerR.append(settingsControls);
-
+        
         controlsWrap.append(spacerL);
         controlsWrap.append(buttonControls);
         controlsWrap.append(spacerR);
@@ -366,9 +393,42 @@ class TimelinePanel extends Container {
             }
         };
 
-        prev.on('click', () => {
-            skip('back');
-        });
+        // Only attach event handlers for buttons that exist (desktop only)
+        if (!isMobile && prev && next && addKey && removeKey) {
+            prev.on('click', () => {
+                skip('back');
+            });
+
+            next.on('click', () => {
+                skip('forward');
+            });
+
+            addKey.on('click', () => {
+                events.fire('timeline.add', events.invoke('timeline.frame'));
+            });
+
+            removeKey.on('click', () => {
+                const index = events.invoke('timeline.keys').indexOf(events.invoke('timeline.frame'));
+                if (index !== -1) {
+                    events.fire('timeline.remove', index);
+                    events.fire('timeline.frame', events.invoke('timeline.frame'));
+                }
+            });
+
+            const canDelete = (frame: number) => events.invoke('timeline.keys').includes(frame);
+
+            events.on('timeline.frame', (frame: number) => {
+                removeKey.enabled = canDelete(frame);
+            });
+
+            events.on('timeline.keyRemoved', (index: number) => {
+                removeKey.enabled = canDelete(events.invoke('timeline.frame'));
+            });
+
+            events.on('timeline.keyAdded', (frame: number) => {
+                removeKey.enabled = canDelete(frame);
+            });
+        }
 
         play.on('click', () => {
             if (events.invoke('timeline.playing')) {
@@ -380,36 +440,6 @@ class TimelinePanel extends Container {
             }
         });
 
-        next.on('click', () => {
-            skip('forward');
-        });
-
-        addKey.on('click', () => {
-            events.fire('timeline.add', events.invoke('timeline.frame'));
-        });
-
-        removeKey.on('click', () => {
-            const index = events.invoke('timeline.keys').indexOf(events.invoke('timeline.frame'));
-            if (index !== -1) {
-                events.fire('timeline.remove', index);
-                events.fire('timeline.frame', events.invoke('timeline.frame'));
-            }
-        });
-
-        const canDelete = (frame: number) => events.invoke('timeline.keys').includes(frame);
-
-        events.on('timeline.frame', (frame: number) => {
-            removeKey.enabled = canDelete(frame);
-        });
-
-        events.on('timeline.keyRemoved', (index: number) => {
-            removeKey.enabled = canDelete(events.invoke('timeline.frame'));
-        });
-
-        events.on('timeline.keyAdded', (frame: number) => {
-            removeKey.enabled = canDelete(frame);
-        });
-
         // cancel animation playback if user interacts with camera
         events.on('camera.controller', (type: string) => {
             if (events.invoke('timeline.playing')) {
@@ -418,14 +448,17 @@ class TimelinePanel extends Container {
         });
 
         // tooltips
-        tooltips.register(prev, localize('tooltip.timeline.prev-key'), 'top');
         tooltips.register(play, localize('tooltip.timeline.play'), 'top');
-        tooltips.register(next, localize('tooltip.timeline.next-key'), 'top');
-        tooltips.register(addKey, localize('tooltip.timeline.add-key'), 'top');
-        tooltips.register(removeKey, localize('tooltip.timeline.remove-key'), 'top');
         tooltips.register(speed, localize('tooltip.timeline.frame-rate'), 'top');
-        tooltips.register(frames, localize('tooltip.timeline.total-frames'), 'top');
-        tooltips.register(smoothness, localize('tooltip.timeline.smoothness'), 'top');
+        
+        if (!isMobile && prev && next && addKey && removeKey && frames && smoothness) {
+            tooltips.register(prev, localize('tooltip.timeline.prev-key'), 'top');
+            tooltips.register(next, localize('tooltip.timeline.next-key'), 'top');
+            tooltips.register(addKey, localize('tooltip.timeline.add-key'), 'top');
+            tooltips.register(removeKey, localize('tooltip.timeline.remove-key'), 'top');
+            tooltips.register(frames, localize('tooltip.timeline.total-frames'), 'top');
+            tooltips.register(smoothness, localize('tooltip.timeline.smoothness'), 'top');
+        }
     }
 }
 
