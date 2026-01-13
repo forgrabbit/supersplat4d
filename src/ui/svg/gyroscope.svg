@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="38" height="38" viewBox="0 0 38 38" fill="none">
+<g transform="scale(2) translate(3.5, 3.25)">
+    <!-- Phone body -->
+    <rect x="2" y="0.5" width="8" height="11" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
+    <!-- Screen -->
+    <rect x="3" y="2" width="6" height="7" fill="currentColor" opacity="0.3"/>
+    <!-- Rotation arrows -->
+    <path d="M0.5 6C0.5 3.5 2 1.5 4 1" stroke="currentColor" stroke-width="0.8" fill="none" stroke-linecap="round"/>
+    <path d="M4 1L3.2 2.2M4 1L5 1.8" stroke="currentColor" stroke-width="0.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M11.5 6C11.5 8.5 10 10.5 8 11" stroke="currentColor" stroke-width="0.8" fill="none" stroke-linecap="round"/>
+    <path d="M8 11L8.8 9.8M8 11L7 10.2" stroke="currentColor" stroke-width="0.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+</svg>

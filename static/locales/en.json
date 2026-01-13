@@ -203,6 +203,7 @@
     "tooltip.right-toolbar.frame-selection": "Frame Selection ( F )",
     "tooltip.right-toolbar.reset-camera": "Reset Camera",
     "tooltip.right-toolbar.colors": "Colors",
+    "tooltip.right-toolbar.gyroscope": "Gyroscope Control (Mobile)",
     "tooltip.right-toolbar.view-options": "View Options",
     "tooltip.bottom-toolbar.undo": "Undo ( Ctrl + Z )",
     "tooltip.bottom-toolbar.redo": "Redo ( Ctrl + Shift + Z )",

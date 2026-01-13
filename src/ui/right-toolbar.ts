@@ -6,6 +6,7 @@ import cameraFrameSelectionSvg from './svg/camera-frame-selection.svg';
 import cameraResetSvg from './svg/camera-reset.svg';
 import centersSvg from './svg/centers.svg';
 import colorPanelSvg from './svg/color-panel.svg';
+import gyroscopeSvg from './svg/gyroscope.svg';
 import ringsSvg from './svg/rings.svg';
 import showHideSplatsSvg from './svg/show-hide-splats.svg';
 import { Tooltips } from './tooltips';
@@ -59,6 +60,12 @@ class RightToolbar extends Container {
             icon: 'E283'
         });
 
+        // Gyroscope toggle button (for mobile devices)
+        const gyroscopeToggle = new Button({
+            id: 'right-toolbar-gyroscope',
+            class: 'right-toolbar-toggle'
+        });
+
         const centersDom = createSvg(centersSvg);
         const ringsDom = createSvg(ringsSvg);
         ringsDom.style.display = 'none';
@@ -69,6 +76,7 @@ class RightToolbar extends Container {
         cameraFrameSelection.dom.appendChild(createSvg(cameraFrameSelectionSvg));
         cameraReset.dom.appendChild(createSvg(cameraResetSvg));
         colorPanel.dom.appendChild(createSvg(colorPanelSvg));
+        gyroscopeToggle.dom.appendChild(createSvg(gyroscopeSvg));
 
         this.append(ringsModeToggle);
         this.append(showHideSplats);
@@ -76,6 +84,7 @@ class RightToolbar extends Container {
         this.append(cameraFrameSelection);
         this.append(cameraReset);
         this.append(colorPanel);
+        this.append(gyroscopeToggle);
         this.append(new Element({ class: 'right-toolbar-separator' }));
         this.append(options);
 
@@ -84,6 +93,7 @@ class RightToolbar extends Container {
         tooltips.register(cameraFrameSelection, localize('tooltip.right-toolbar.frame-selection'), 'left');
         tooltips.register(cameraReset, localize('tooltip.right-toolbar.reset-camera'), 'left');
         tooltips.register(colorPanel, localize('tooltip.right-toolbar.colors'), 'left');
+        tooltips.register(gyroscopeToggle, localize('tooltip.right-toolbar.gyroscope'), 'left');
         tooltips.register(options, localize('tooltip.right-toolbar.view-options'), 'left');
 
         // add event handlers
@@ -96,6 +106,7 @@ class RightToolbar extends Container {
         cameraFrameSelection.on('click', () => events.fire('camera.focus'));
         cameraReset.on('click', () => events.fire('camera.reset'));
         colorPanel.on('click', () => events.fire('colorPanel.toggleVisible'));
+        gyroscopeToggle.on('click', () => events.fire('camera.toggleGyroscope'));
         options.on('click', () => events.fire('viewPanel.toggleVisible'));
 
         events.on('camera.mode', (mode: string) => {
@@ -115,6 +126,19 @@ class RightToolbar extends Container {
         events.on('viewPanel.visible', (visible: boolean) => {
             options.class[visible ? 'add' : 'remove']('active');
         });
+
+        events.on('camera.gyroscope', (enabled: boolean) => {
+            gyroscopeToggle.class[enabled ? 'add' : 'remove']('active');
+        });
+
+        // Debug: log mobile detection
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        console.log('🔍 Gyroscope button - isMobile:', isMobile, 'userAgent:', navigator.userAgent);
+
+        // TODO: Uncomment this after debugging to hide on desktop
+        // if (!isMobile) {
+        //     gyroscopeToggle.hidden = true;
+        // }
     }
 }
 

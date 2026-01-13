@@ -203,6 +203,7 @@
     "tooltip.right-toolbar.frame-selection": "框选 ( F )",
     "tooltip.right-toolbar.reset-camera": "重置相机",
     "tooltip.right-toolbar.colors": "颜色",
+    "tooltip.right-toolbar.gyroscope": "陀螺仪控制 (移动端)",
     "tooltip.right-toolbar.view-options": "视图选项",
     "tooltip.bottom-toolbar.undo": "撤销 ( Ctrl + Z )",
     "tooltip.bottom-toolbar.redo": "重做 ( Ctrl + Shift + Z )",

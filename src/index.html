@@ -13,6 +13,16 @@
         <!-- jszip -->
         <script src="jszip.js"></script>
 
+        <!-- Mobile debug console (eruda) - Remove in production -->
+        <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
+        <script>
+            // Initialize eruda for mobile debugging
+            if (typeof eruda !== 'undefined') {
+                eruda.init();
+                console.log('📱 Eruda mobile console initialized');
+            }
+        </script>
+
         <!-- Service worker -->
         <script>
             const sw = navigator.serviceWorker;

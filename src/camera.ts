@@ -29,6 +29,7 @@ import {
 
 import { PointerController } from './controllers';
 import { Element, ElementType } from './element';
+import { GyroscopeController } from './gyroscope-controller';
 import { Serializer } from './serializer';
 import { Splat } from './splat';
 import { TweenValue } from './tween-value';
@@ -60,6 +61,7 @@ const mod = (n: number, m: number) => ((n % m) + m) % m;
 
 class Camera extends Element {
     controller: PointerController;
+    gyroscopeController: GyroscopeController;
     entity: Entity;
     focalPointTween = new TweenValue({ x: 0, y: 0.5, z: 0 });
     azimElevTween = new TweenValue({ azim: 30, elev: -15 });
@@ -263,6 +265,42 @@ class Camera extends Element {
 
         this.controller = new PointerController(this, target);
 
+        // initialize gyroscope controller
+        this.gyroscopeController = new GyroscopeController(this);
+
+        // handle gyroscope events
+        this.scene.events.on('camera.toggleGyroscope', async () => {
+            const wasEnabled = this.gyroscopeController.enabled;
+            
+            // If enabling (not disabling), focus first, then enable
+            if (!wasEnabled) {
+                // Focus on model center with animation (same as frame selection button)
+                // This ensures the model is centered before recording initial position
+                this.focus({ speed: 1 });
+                
+                // Wait for focus animation to complete before enabling gyroscope
+                // speed: 1 means transitionTime = 1 * dampingFactor (0.2) = 0.2 seconds
+                // Wait slightly longer to ensure animation is fully complete
+                const animationDuration = 1 * this.scene.config.controls.dampingFactor * 1000; // Convert to ms
+                await new Promise(resolve => setTimeout(resolve, animationDuration + 50));
+            }
+            
+            const enabled = await this.gyroscopeController.toggle();
+            this.scene.events.fire('camera.gyroscope', enabled);
+        });
+
+        this.scene.events.on('camera.recalibrateGyroscope', () => {
+            this.gyroscopeController.recalibrate();
+        });
+
+        this.scene.events.function('camera.gyroscopeSupported', () => {
+            return this.gyroscopeController.supported;
+        });
+
+        this.scene.events.function('camera.gyroscopeEnabled', () => {
+            return this.gyroscopeController.enabled;
+        });
+
         // apply scene config
         const config = this.scene.config;
         const controls = config.controls;
@@ -363,6 +401,9 @@ class Camera extends Element {
     remove() {
         this.controller.destroy();
         this.controller = null;
+
+        this.gyroscopeController.destroy();
+        this.gyroscopeController = null;
 
         this.entity.camera.layers = this.entity.camera.layers.filter(layer => layer !== this.scene.shadowLayer.id);
         this.scene.cameraRoot.removeChild(this.entity);
@@ -520,7 +561,7 @@ class Camera extends Element {
         }
     }
 
-    focus(options?: { focalPoint: Vec3, radius: number, speed: number }) {
+    focus(options?: { focalPoint?: Vec3, radius?: number, speed?: number }) {
         const getSplatFocalPoint = () => {
             for (const element of this.scene.elements) {
                 if (element.type === ElementType.splat) {
@@ -532,8 +573,8 @@ class Camera extends Element {
             }
         };
 
-        const focalPoint = options ? options.focalPoint : (getSplatFocalPoint() ?? this.scene.bound.center);
-        const focalRadius = options ? options.radius : this.scene.bound.halfExtents.length();
+        const focalPoint = options?.focalPoint ?? (getSplatFocalPoint() ?? this.scene.bound.center);
+        const focalRadius = options?.radius ?? this.scene.bound.halfExtents.length();
 
         const fdist = focalRadius / this.sceneRadius;
 
