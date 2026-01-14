@@ -694,6 +694,16 @@ class Camera extends Element {
 
         device.scope.resolve('pickerAlpha').setValue(alpha);
         device.scope.resolve('pickMode').setValue(['add', 'remove', 'set'].indexOf(op));
+        
+        // Set frame-only mode for picker (filter invisible splats in frame-only mode)
+        // Note: uFrameOnlyMode is only available in PICK_PASS, so resolve may return null
+        const frameOnlyMode = events.invoke('selection.frameOnly') as boolean;
+        const frameOnlyUniform = device.scope.resolve('uFrameOnlyMode');
+        if (frameOnlyUniform) {
+            frameOnlyUniform.setValue(frameOnlyMode && splat.isDynamic);
+        }
+        // If uniform doesn't exist (not in PICK_PASS), that's fine - it won't be used
+        
         this.picker.resize(width, height);
         this.picker.prepare(this.entity.camera, this.scene.app.scene, [worldLayer]);
 

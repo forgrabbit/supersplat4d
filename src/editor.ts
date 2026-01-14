@@ -20,6 +20,56 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
     const mat = new Mat4();
     const SH_C0 = 0.28209479177387814;
 
+    // Frame-only selection mode (only select visible splats at current frame for dynamic gaussians)
+    let frameOnlyMode = false;
+    
+    events.function('selection.frameOnly', () => frameOnlyMode);
+    events.on('selection.toggleFrameOnly', () => {
+        frameOnlyMode = !frameOnlyMode;
+        events.fire('selection.frameOnly', frameOnlyMode);
+        scene.forceRender = true;
+    });
+
+    /**
+     * Check if a splat is visible at current time (for dynamic gaussians)
+     * Returns true for static gaussians or if frameOnlyMode is disabled
+     */
+    const isSplatVisibleAtCurrentTime = (splat: Splat, index: number): boolean => {
+        if (!frameOnlyMode || !splat.isDynamic || !splat.dynManifest) {
+            return true; // Always visible if not in frame-only mode or not dynamic
+        }
+
+        const splatData = splat.splatData;
+        const trbfCenter = splatData.getProp('trbf_center') as Float32Array;
+        const trbfScale = splatData.getProp('trbf_scale') as Float32Array;
+        const opacity = splatData.getProp('opacity') as Float32Array;
+
+        if (!trbfCenter || !trbfScale || !opacity) {
+            return true; // Missing dynamic properties, assume visible
+        }
+
+        // Bounds check
+        if (index < 0 || index >= splatData.numSplats) {
+            return false; // Invalid index
+        }
+
+        const currentTime = splat.currentTime;
+        const tc = trbfCenter[index];
+        const ts = Math.max(trbfScale[index], 1e-6); // Already exp-converted
+        const opLogit = opacity[index];
+
+        // Compute sigmoid of opacity
+        const baseOp = 1 / (1 + Math.exp(-Math.max(-20, Math.min(20, opLogit))));
+
+        // Calculate dynamic opacity
+        const dt = (currentTime - tc) / ts;
+        const trbfGauss = Math.exp(-dt * dt);
+        const dynOpacity = baseOp * trbfGauss;
+
+        // Use same threshold as rendering (0.05)
+        return dynOpacity > 0.05;
+    };
+
     const decodeColorChannel = (value: number) => {
         return Math.min(1, Math.max(0, 0.5 + value * SH_C0));
     };
@@ -262,13 +312,27 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
     events.on('select.pred', (op, pred: (i: number) => boolean) => {
         selectedSplats().forEach((splat) => {
-            events.fire('edit.add', new SelectOp(splat, op, pred));
+            // Combine predicate with visibility check if frame-only mode is enabled
+            const filter = (i: number) => {
+                if (!pred(i)) {
+                    return false;
+                }
+                // Filter by visibility if frame-only mode is enabled
+                return isSplatVisibleAtCurrentTime(splat, i);
+            };
+            events.fire('edit.add', new SelectOp(splat, op, filter));
         });
     });
 
     const intersectCenters = (splat: Splat, op: 'add'|'remove'|'set', options: any) => {
         const data = scene.dataProcessor.intersect(options, splat);
-        const filter = (i: number) => data[i] === 255;
+        const filter = (i: number) => {
+            if (data[i] !== 255) {
+                return false;
+            }
+            // Filter by visibility if frame-only mode is enabled
+            return isSplatVisibleAtCurrentTime(splat, i);
+        };
         events.fire('edit.add', new SelectOp(splat, op, filter));
     };
 
@@ -309,7 +373,11 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
                 const selected = new Set<number>(pick);
                 const filter = (i: number) => {
-                    return selected.has(i);
+                    if (!selected.has(i)) {
+                        return false;
+                    }
+                    // Filter by visibility if frame-only mode is enabled
+                    return isSplatVisibleAtCurrentTime(splat, i);
                 };
 
                 events.fire('edit.add', new SelectOp(splat, op, filter));
@@ -378,7 +446,11 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 }
 
                 const filter = (i: number) => {
-                    return selected.has(i);
+                    if (!selected.has(i)) {
+                        return false;
+                    }
+                    // Filter by visibility if frame-only mode is enabled
+                    return isSplatVisibleAtCurrentTime(splat, i);
                 };
 
                 events.fire('edit.add', new SelectOp(splat, op, filter));
@@ -411,7 +483,12 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                     mat.transformVec4(vec4, vec4);
                     const px = (vec4.x / vec4.w * 0.5 + 0.5) * width;
                     const py = (-vec4.y / vec4.w * 0.5 + 0.5) * height;
-                    return Math.abs(px - sx) < splatSize && Math.abs(py - sy) < splatSize;
+                    const inRect = Math.abs(px - sx) < splatSize && Math.abs(py - sy) < splatSize;
+                    if (!inRect) {
+                        return false;
+                    }
+                    // Filter by visibility if frame-only mode is enabled
+                    return isSplatVisibleAtCurrentTime(splat, i);
                 };
 
                 events.fire('edit.add', new SelectOp(splat, op, filter));
@@ -425,7 +502,11 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 )[0];
 
                 const filter = (i: number) => {
-                    return i === pickId;
+                    if (i !== pickId) {
+                        return false;
+                    }
+                    // Filter by visibility if frame-only mode is enabled
+                    return isSplatVisibleAtCurrentTime(splat, i);
                 };
 
                 events.fire('edit.add', new SelectOp(splat, op, filter));
@@ -480,9 +561,14 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
             // filter to select pixels within the color threshold
             const filter = (i: number) => {
-                return withinThreshold(decodeColorChannel(reds[i]), reference[0]) &&
+                const colorMatch = withinThreshold(decodeColorChannel(reds[i]), reference[0]) &&
                     withinThreshold(decodeColorChannel(greens[i]), reference[1]) &&
                     withinThreshold(decodeColorChannel(blues[i]), reference[2]);
+                if (!colorMatch) {
+                    return false;
+                }
+                // Filter by visibility if frame-only mode is enabled
+                return isSplatVisibleAtCurrentTime(splat, i);
             };
 
             events.fire('edit.add', new SelectOp(splat, op, filter));

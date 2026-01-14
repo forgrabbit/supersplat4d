@@ -12,6 +12,7 @@ import polygonSvg from './svg/select-poly.svg';
 import sphereSvg from './svg/select-sphere.svg';
 import boxSvg from './svg/show-hide-splats.svg';
 import undoSvg from './svg/undo.svg';
+import frameOnlySvg from './svg/select-frame-only.svg';
 import { Tooltips } from './tooltips';
 // import cropSvg from './svg/crop.svg';
 
@@ -85,6 +86,11 @@ class BottomToolbar extends Container {
             class: 'bottom-toolbar-tool'
         });
 
+        const frameOnly = new Button({
+            id: 'bottom-toolbar-frame-only',
+            class: 'bottom-toolbar-toggle'
+        });
+
         // const crop = new Button({
         //     id: 'bottom-toolbar-crop',
         //     class: ['bottom-toolbar-tool', 'disabled']
@@ -136,6 +142,7 @@ class BottomToolbar extends Container {
         box.dom.appendChild(createSvg(boxSvg));
         lasso.dom.appendChild(createSvg(lassoSvg));
         eyedropper.dom.appendChild(createSvg(eyedropperSvg));
+        frameOnly.dom.appendChild(createSvg(frameOnlySvg));
         // crop.dom.appendChild(createSvg(cropSvg));
 
         this.append(undo);
@@ -147,6 +154,8 @@ class BottomToolbar extends Container {
         this.append(brush);
         this.append(flood);
         this.append(eyedropper);
+        this.append(new Element({ class: 'bottom-toolbar-separator' }));
+        this.append(frameOnly);
         this.append(new Element({ class: 'bottom-toolbar-separator' }));
         this.append(sphere);
         this.append(box);
@@ -168,6 +177,7 @@ class BottomToolbar extends Container {
         flood.dom.addEventListener('click', () => events.fire('tool.floodSelection'));
         picker.dom.addEventListener('click', () => events.fire('tool.rectSelection'));
         eyedropper.dom.addEventListener('click', () => events.fire('tool.eyedropperSelection'));
+        frameOnly.dom.addEventListener('click', () => events.fire('selection.toggleFrameOnly'));
         sphere.dom.addEventListener('click', () => events.fire('tool.sphereSelection'));
         box.dom.addEventListener('click', () => events.fire('tool.boxSelection'));
         translate.dom.addEventListener('click', () => events.fire('tool.move'));
@@ -224,6 +234,11 @@ class BottomToolbar extends Container {
         tooltips.register(coordSpace, localize('tooltip.bottom-toolbar.local-space'));
         tooltips.register(origin, localize('tooltip.bottom-toolbar.bound-center'));
         tooltips.register(eyedropper, localize('tooltip.bottom-toolbar.eyedropper'));
+        tooltips.register(frameOnly, localize('tooltip.bottom-toolbar.frame-only') || 'Select only visible splats at current frame');
+
+        events.on('selection.frameOnly', (enabled: boolean) => {
+            frameOnly.class[enabled ? 'add' : 'remove']('active');
+        });
     }
 }
 

@@ -14,6 +14,7 @@ varying mediump vec4 color;
 
 #if PICK_PASS
     uniform uint pickMode;                      // 0: add, 1: remove, 2: set
+    uniform bool uFrameOnlyMode;                // If true, only pick visible splats at current frame
 #endif
 
 mediump vec4 discardVec = vec4(0.0, 0.0, 2.0, 1.0);
@@ -66,6 +67,32 @@ void main(void) {
                 return;
             }
         }
+        
+        // Filter by visibility at current frame if frame-only mode is enabled
+        // Note: We use a simplified check here (gaussian weight only) for early discard.
+        // Full opacity check (including base opacity) is done in CPU-side selection logic.
+        #ifdef DYNAMIC_MODE
+        if (uFrameOnlyMode && uIsDynamic) {
+            ivec2 uv = ivec2(source.uv);
+            vec2 trbfData = texelFetch(splatTrbf, uv, 0).rg;
+            float trbfCenter = trbfData.r;
+            float trbfScale = trbfData.g;
+            
+            // Calculate gaussian weight (temporal kernel)
+            // We can't read opacity here safely (readColor may need center), so we use
+            // a conservative threshold on gaussian weight alone.
+            // This is a performance optimization - full check happens in CPU selection logic.
+            float dt = (uCurrentTime - trbfCenter) / max(trbfScale, 1e-6);
+            float gaussian = exp(-dt * dt);
+            
+            // Conservative threshold: if gaussian weight is very low, the splat is likely invisible
+            // This catches most invisible splats while being safe (may miss some edge cases)
+            if (gaussian < 0.1) {
+                gl_Position = discardVec;
+                return;
+            }
+        }
+        #endif
     #else
         if ((vertexState & 4u) != 0u) {
             gl_Position = discardVec;
