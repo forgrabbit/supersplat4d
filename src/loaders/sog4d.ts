@@ -217,16 +217,16 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
 
     const count = meta.count;
 
-    // Load and decode WebP images (common files)
-    console.log('  Loading and decoding 7 common WebP files...');
+    // Determine TRBF encoding mode
+    const trbfIsKmeans = meta.trbf.encoding === 'kmeans';
+
+    // Load and decode ALL WebP images in parallel (common files + TRBF files)
+    const totalWebpFiles = trbfIsKmeans ? 8 : 9; // 7 common + 1 or 2 TRBF files
+    console.log(`  Loading and decoding ${totalWebpFiles} WebP files (all parallel)...`);
     const webpStartTime = performance.now();
-    const [
-        meansL, meansU,
-        quatsData,
-        scalesData,
-        sh0Data,
-        motionL, motionU
-    ] = await Promise.all([
+    
+    // Build the parallel decode array
+    const webpPromises: Promise<{ rgba: Uint8Array, width: number, height: number }>[] = [
         loadFile('means_l.webp').then(decodeWebP),
         loadFile('means_u.webp').then(decodeWebP),
         loadFile('quats.webp').then(decodeWebP),
@@ -234,29 +234,43 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
         loadFile('sh0.webp').then(decodeWebP),
         loadFile('motion_l.webp').then(decodeWebP),
         loadFile('motion_u.webp').then(decodeWebP)
-    ]);
+    ];
+    
+    // Add TRBF files based on encoding mode
+    if (trbfIsKmeans) {
+        webpPromises.push(loadFile('trbf.webp').then(decodeWebP));
+    } else {
+        webpPromises.push(
+            loadFile('trbf_l.webp').then(decodeWebP),
+            loadFile('trbf_u.webp').then(decodeWebP)
+        );
+    }
+    
+    // Execute all WebP decodes in parallel
+    const webpResults = await Promise.all(webpPromises);
     const webpTime = performance.now() - webpStartTime;
-    console.log(`⏱️  WebP decoding (7 files, parallel): ${webpTime.toFixed(2)}ms`);
-
-    // Load TRBF data (different files depending on encoding mode)
-    const trbfIsKmeans = meta.trbf.encoding === 'kmeans';
+    console.log(`⏱️  WebP decoding (${totalWebpFiles} files, all parallel): ${webpTime.toFixed(2)}ms`);
+    
+    // Extract results
+    const [
+        meansL, meansU,
+        quatsData,
+        scalesData,
+        sh0Data,
+        motionL, motionU
+    ] = webpResults.slice(0, 7);
+    
+    // Extract TRBF results
     let trbfData: { rgba: Uint8Array, width: number, height: number } | null = null;
     let trbfL: { rgba: Uint8Array, width: number, height: number } | null = null;
     let trbfU: { rgba: Uint8Array, width: number, height: number } | null = null;
-
-    console.log(`  Loading TRBF WebP (mode: ${trbfIsKmeans ? 'kmeans (1 file)' : 'quantize16 (2 files)'})...`);
-    const trbfWebpStartTime = performance.now();
+    
     if (trbfIsKmeans) {
-        trbfData = await loadFile('trbf.webp').then(decodeWebP);
+        trbfData = webpResults[7];
     } else {
-        [trbfL, trbfU] = await Promise.all([
-            loadFile('trbf_l.webp').then(decodeWebP),
-            loadFile('trbf_u.webp').then(decodeWebP)
-        ]);
+        trbfL = webpResults[7];
+        trbfU = webpResults[8];
     }
-    const trbfWebpTime = performance.now() - trbfWebpStartTime;
-    const trbfFileCount = trbfIsKmeans ? 1 : 2;
-    console.log(`⏱️  TRBF WebP decoding (${trbfFileCount} file${trbfFileCount > 1 ? 's' : ''}, ${trbfIsKmeans ? 'sequential' : 'parallel'}): ${trbfWebpTime.toFixed(2)}ms`);
 
     // Allocate output arrays
     const x = new Float32Array(count);
