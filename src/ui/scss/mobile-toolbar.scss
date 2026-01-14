@@ -47,79 +47,64 @@
 }
 
 .mobile-toolbar-button {
+    // Reset all PCUI Button styles
+    all: unset;
+    box-sizing: border-box;
+    
     width: 100%;
     height: 44px;
     margin: 2px 0px;
     padding: 0px 12px;
-    border: 0px;
     border-radius: 4px;
     background-color: $bcg-primary;
     color: $clr-default;
-    display: flex !important;
-    align-items: center;
-    justify-content: flex-start;
     cursor: pointer;
     font-size: 14px;
     
-    // Reset PCUI Button default styles that might interfere
-    text-align: left !important;
-    
-    // Ensure button content is properly aligned
-    > * {
-        display: flex;
-        align-items: center;
-    }
+    // Use flex layout for consistent alignment
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 12px;
 
+    // Icon font (for ::before) - uniform size
     &::before {
-        font-size: 18px !important;
-        line-height: 100% !important;
-        margin-right: 12px !important;
+        font-family: pc-icon;
+        font-size: 20px;
+        width: 24px;
+        height: 24px;
+        line-height: 24px;
         flex-shrink: 0;
+        flex-grow: 0;
         display: inline-block;
-    }
-
-    svg {
-        width: 24px !important;
-        height: 24px !important;
-        min-width: 24px !important;
-        min-height: 24px !important;
-        margin-right: 12px !important;
+        text-align: center;
         color: $clr-default;
+    }
+
+    // SVG icons - uniform size
+    svg {
+        width: 24px;
+        height: 24px;
+        min-width: 24px;
+        min-height: 24px;
+        max-width: 24px;
+        max-height: 24px;
         flex-shrink: 0;
+        flex-grow: 0;
         display: block;
+        color: $clr-default;
     }
 
-    // Gyroscope button icon (should be same size as others)
-    #mobile-toolbar-gyroscope svg {
-        width: 24px !important;
-        height: 24px !important;
-        min-width: 24px !important;
-        min-height: 24px !important;
-    }
-
-    // High precision button has same size icon
-    #mobile-toolbar-high-precision svg {
-        width: 24px !important;
-        height: 24px !important;
-        min-width: 24px !important;
-        min-height: 24px !important;
-    }
-
+    // Text label
     span {
         color: $clr-default;
         white-space: nowrap;
-        flex-grow: 0;
-        flex-shrink: 0;
-        text-align: left !important;
-        margin-left: 0 !important;
-        padding-left: 0 !important;
-        display: inline-block;
-        vertical-align: middle;
-    }
-    
-    // Ensure all text labels align properly
-    > span {
-        text-align: left !important;
+        flex-grow: 1;
+        flex-shrink: 1;
+        text-align: left;
+        line-height: 44px;
+        font-size: 14px;
     }
 
     &:hover {

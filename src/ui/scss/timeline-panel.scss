@@ -79,40 +79,45 @@
     &.mobile-timeline {
         > #controls-wrap {
             // Ensure proper layout on mobile
+            padding: 2px 4px !important;
+            
             > #button-controls {
-                // Center the play button
-                justify-content: center;
-                flex-grow: 0;
-                flex-shrink: 0;
+                // Play button should be centered
+                justify-content: center !important;
+                flex-grow: 0 !important;
+                flex-shrink: 0 !important;
                 
                 > .button {
                     // Make play button slightly larger on mobile for better touch target
-                    width: 44px;
-                    height: 32px;
-                    font-size: 16px;
-                    line-height: 32px;
+                    width: 44px !important;
+                    height: 32px !important;
+                    font-size: 16px !important;
+                    line-height: 32px !important;
+                    margin: 0 4px !important;
                 }
             }
             
             > .spacer {
-                // First spacer (left) - empty, just for spacing
+                // Both spacers should flex equally to center the play button
                 &:first-of-type {
-                    flex-grow: 1;
-                    flex-basis: 0;
+                    flex-grow: 1 !important;
+                    flex-basis: 0 !important;
+                    justify-content: flex-start !important;
                 }
                 
-                // Last spacer (right) - contains frame rate
                 &:last-of-type {
-                    flex-grow: 0;
-                    flex-shrink: 0;
-                    justify-content: flex-end;
+                    flex-grow: 1 !important;
+                    flex-basis: 0 !important;
+                    justify-content: flex-end !important;
                     
                     > #settings-controls {
+                        display: flex !important;
+                        
                         // Compact frame rate control on mobile
                         > #speed {
                             width: 70px !important;
-                            min-width: 70px;
-                            max-width: 70px;
+                            min-width: 70px !important;
+                            max-width: 70px !important;
                             margin: 0 !important;
                         }
                     }
