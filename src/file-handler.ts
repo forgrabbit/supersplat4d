@@ -255,14 +255,25 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
     // import a single file, .ply, .splat or meta.json
     const importFile = async (file: ImportFile, animationFrame: boolean) => {
+        const importStartTime = performance.now();
         try {
+            const loadStartTime = performance.now();
             const model = await scene.assetLoader.load({
                 contents: file.contents,
                 filename: file.filename,
                 url: file.url,
                 animationFrame
             });
+            const loadTime = performance.now() - loadStartTime;
+            console.log(`⏱️  Asset loading: ${loadTime.toFixed(2)}ms`);
+            
+            const initStartTime = performance.now();
             scene.add(model);
+            const initTime = performance.now() - initStartTime;
+            console.log(`⏱️  Splat initialization: ${initTime.toFixed(2)}ms`);
+            
+            const totalTime = performance.now() - importStartTime;
+            console.log(`⏱️  Total import time: ${totalTime.toFixed(2)}ms`);
             return model;
         } catch (error) {
             await showLoadError(error.message ?? error, file.filename);

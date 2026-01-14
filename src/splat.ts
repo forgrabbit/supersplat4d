@@ -116,6 +116,7 @@ class Splat extends Element {
 
     constructor(asset: Asset, orientation: Vec3) {
         super(ElementType.splat);
+        const initStartTime = performance.now();
 
         const splatResource = asset.resource as GSplatResource;
         const splatData = splatResource.gsplatData;
@@ -325,6 +326,9 @@ class Splat extends Element {
             this._dyn_m2 = this.splatData.getProp('motion_2') as Float32Array;
             this._dyn_tc = this.splatData.getProp('trbf_center') as Float32Array;
         }
+        
+        const initTime = performance.now() - initStartTime;
+        console.log(`⏱️  Splat constructor initialization: ${initTime.toFixed(2)}ms`);
     }
 
     destroy() {

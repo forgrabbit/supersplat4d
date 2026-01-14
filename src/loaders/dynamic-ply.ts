@@ -131,7 +131,7 @@ const computeSegments = (
     opacityThreshold: number = 0.005
 ): SegmentInfo[] => {
     console.log('🔄 Computing segments...');
-    const startTime = performance.now();
+    const computeStartTime = performance.now();
     
     const { start, duration, fps } = params;
     const numSplats = trbfCenter.length;
@@ -214,7 +214,7 @@ const computeSegments = (
         console.log(`  Segment ${segIdx}: [${t0.toFixed(2)}s - ${t1.toFixed(2)}s], ${visibleIndices.length} active splats`);
     }
     
-    const elapsed = performance.now() - startTime;
+    const elapsed = performance.now() - computeStartTime;
     console.log(`✅ Segments computed in ${elapsed.toFixed(0)}ms`);
     
     return segments;
@@ -234,6 +234,7 @@ const loadDynamicPly = async (
     assetSource: AssetSource,
     params: DynamicPlyParams
 ): Promise<Asset> => {
+    const totalStartTime = performance.now();
     console.log('🔄 Loading dynamic PLY file...');
     
     // First, load the PLY using PlayCanvas's standard loader
@@ -261,6 +262,7 @@ const loadDynamicPly = async (
         
         asset.on('load', () => {
             try {
+                const plyParseStartTime = performance.now();
                 const splatData = (asset.resource as GSplatResource).gsplatData as GSplatData;
                 
                 // Validate required properties
@@ -284,11 +286,14 @@ const loadDynamicPly = async (
                 const trbfScaleLog = splatData.getProp('trbf_scale') as Float32Array;
                 const opacity = splatData.getProp('opacity') as Float32Array;
                 
+                const plyParseTime = performance.now() - plyParseStartTime;
+                console.log(`⏱️  PLY parsing: ${plyParseTime.toFixed(2)}ms`);
                 console.log(`📊 Dynamic PLY: ${splatData.numSplats} splats`);
                 console.log(`📊 Params: start=${params.start}, duration=${params.duration}, fps=${params.fps}`);
                 
                 // Convert trbf_scale from log to linear (PLY stores log(trbf_scale))
                 // This is critical for both segment computation AND rendering
+                const trbfConvertStartTime = performance.now();
                 const trbfScaleLinear = new Float32Array(trbfScaleLog.length);
                 for (let i = 0; i < trbfScaleLog.length; i++) {
                     trbfScaleLinear[i] = Math.exp(trbfScaleLog[i]);
@@ -301,9 +306,14 @@ const loadDynamicPly = async (
                 if (trbfScaleProp) {
                     trbfScaleProp.storage = trbfScaleLinear;
                 }
+                const trbfConvertTime = performance.now() - trbfConvertStartTime;
+                console.log(`⏱️  TRBF scale conversion: ${trbfConvertTime.toFixed(2)}ms`);
                 
                 // Compute segments using the log values (computeSegments does its own exp)
+                const segmentsStartTime = performance.now();
                 const segments = computeSegments(trbfCenter, trbfScaleLog, opacity, params);
+                const segmentsTime = performance.now() - segmentsStartTime;
+                console.log(`⏱️  Segments computation: ${segmentsTime.toFixed(2)}ms`);
                 
                 // Create DynManifest
                 const dynManifest: DynManifest = {
@@ -345,6 +355,9 @@ const loadDynamicPly = async (
                 }
                 console.log(`📊 TRBF center range: [${minTrbf.toFixed(3)}, ${maxTrbf.toFixed(3)}]`);
                 console.log(`📊 Manifest: start=${params.start.toFixed(3)}, duration=${params.duration.toFixed(3)}, fps=${params.fps}`);
+                
+                const totalTime = performance.now() - totalStartTime;
+                console.log(`⏱️  Dynamic PLY loading total time: ${totalTime.toFixed(2)}ms`);
                 
                 resolve(asset);
             } catch (error) {

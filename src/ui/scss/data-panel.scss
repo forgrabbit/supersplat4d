@@ -3,6 +3,23 @@
 #data-panel {
     width: 100%;
     height: 320px;
+    
+    // Override collapse button color to match new theme
+    .panel-header-icon {
+        color: $clr-hilight !important;
+    }
+    
+    .panel-header-button {
+        color: $clr-hilight !important;
+        
+        svg {
+            color: $clr-hilight !important;
+        }
+        
+        &:hover {
+            color: $clr-hilight !important;
+        }
+    }
 }
 
 #data-panel-popup-container {

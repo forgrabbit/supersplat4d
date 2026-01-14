@@ -6,6 +6,8 @@ let assetId = 0;
 
 // use the engine to load a gsplat asset (ply, compressed.ply, sog, sog-bundle)
 const loadGsplat = (assets: AssetRegistry, assetSource: AssetSource) => {
+    const totalStartTime = performance.now();
+    console.log('🔄 Loading PLY file...');
     const contents = assetSource.contents && (assetSource.contents instanceof Response ? assetSource.contents : new Response(assetSource.contents));
 
     const file = {
@@ -61,6 +63,8 @@ const loadGsplat = (assets: AssetRegistry, assetSource: AssetSource) => {
             if (missing.length > 0) {
                 reject(new Error(`This file does not contain gaussian splatting data. The following properties are missing: ${missing.join(', ')}`));
             } else {
+                const totalTime = performance.now() - totalStartTime;
+                console.log(`⏱️  PLY loading total time: ${totalTime.toFixed(2)}ms`);
                 resolve(asset);
             }
         });

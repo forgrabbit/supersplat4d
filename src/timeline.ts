@@ -3,7 +3,6 @@ import { EventHandle } from 'playcanvas';
 import { Events } from './events';
 
 const registerTimelineEvents = (events: Events) => {
-    console.log('🎯 registerTimelineEvents START');
     let frames = 180;
     let frameRate = 30;
     let smoothness = 1;
@@ -20,11 +19,9 @@ const registerTimelineEvents = (events: Events) => {
         }
     };
 
-    console.log('📝 Registering timeline.frames function...');
     events.function('timeline.frames', () => {
         return frames;
     });
-    console.log('✅ timeline.frames registered');
 
     events.on('timeline.setFrames', (value: number) => {
         setFrames(value);

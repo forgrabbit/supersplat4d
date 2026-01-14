@@ -119,9 +119,7 @@ const main = async () => {
     await localizeInit();
 
     // editor ui
-    console.log('🎨 Creating EditorUI...');
     const editorUI = new EditorUI(events);
-    console.log('✅ EditorUI created');
 
     // create the graphics device
     const graphicsDevice = await createGraphicsDevice(editorUI.canvas, {
@@ -253,12 +251,9 @@ const main = async () => {
 
     window.scene = scene;
 
-    console.log('📝 Registering events...');
     registerEditorEvents(events, editHistory, scene);
     registerSelectionEvents(events, scene);
-    console.log('⏰ Registering timeline events...');
     registerTimelineEvents(events);
-    console.log('✅ Timeline events registered');
     registerCameraPosesEvents(events);
     registerTransformHandlerEvents(events);
     registerPlySequenceEvents(events);
@@ -297,7 +292,6 @@ const main = async () => {
                 filename: 'ruan_4.sog4d',
                 url: './ruan_4.sog4d'
             }]);
-            console.log('✅ Demo data loaded successfully');
         } catch (error) {
             console.warn('⚠️ Failed to auto-load demo data:', error);
         }

@@ -179,10 +179,14 @@ let assetId = 0;
  * Parse SOG4D ZIP file and create GSplatData
  */
 const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatData, meta: Sog4dMeta, zipEntries: Map<string, ArrayBuffer> }> => {
+    const parseStartTime = performance.now();
     console.log('📦 Parsing SOG4D file...');
 
     // Load ZIP using global JSZip loaded via script tag
+    const zipStartTime = performance.now();
     const zip = await JSZip.loadAsync(zipData);
+    const zipTime = performance.now() - zipStartTime;
+    console.log(`⏱️  ZIP decompression: ${zipTime.toFixed(2)}ms`);
 
     // Helper to load file from ZIP
     const loadFile = async (name: string): Promise<ArrayBuffer> => {
@@ -194,8 +198,11 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
     };
 
     // Parse meta.json
+    const metaStartTime = performance.now();
     const metaJson = await loadFile('meta.json');
     const meta: Sog4dMeta = JSON.parse(new TextDecoder().decode(metaJson));
+    const metaTime = performance.now() - metaStartTime;
+    console.log(`⏱️  Meta.json parsing: ${metaTime.toFixed(2)}ms`);
 
     if (meta.type !== 'sog4d') {
         throw new Error(`Expected type 'sog4d', got '${meta.type}'`);
@@ -207,6 +214,7 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
     const count = meta.count;
 
     // Load and decode WebP images (common files)
+    const webpStartTime = performance.now();
     const [
         meansL, meansU,
         quatsData,
@@ -222,6 +230,8 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
         loadFile('motion_l.webp').then(decodeWebP),
         loadFile('motion_u.webp').then(decodeWebP)
     ]);
+    const webpTime = performance.now() - webpStartTime;
+    console.log(`⏱️  WebP decoding (7 files): ${webpTime.toFixed(2)}ms`);
 
     // Load TRBF data (different files depending on encoding mode)
     const trbfIsKmeans = meta.trbf.encoding === 'kmeans';
@@ -229,6 +239,7 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
     let trbfL: { rgba: Uint8Array, width: number, height: number } | null = null;
     let trbfU: { rgba: Uint8Array, width: number, height: number } | null = null;
 
+    const trbfWebpStartTime = performance.now();
     if (trbfIsKmeans) {
         trbfData = await loadFile('trbf.webp').then(decodeWebP);
     } else {
@@ -237,6 +248,8 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
             loadFile('trbf_u.webp').then(decodeWebP)
         ]);
     }
+    const trbfWebpTime = performance.now() - trbfWebpStartTime;
+    console.log(`⏱️  TRBF WebP decoding: ${trbfWebpTime.toFixed(2)}ms`);
 
     // Allocate output arrays
     const x = new Float32Array(count);
@@ -261,6 +274,7 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
 
     // Decode means (position)
     console.log('  Decoding means...');
+    const meansDecodeStartTime = performance.now();
     const meansLRgba = meansL.rgba;
     const meansURgba = meansU.rgba;
     const meansMins = meta.means.mins;
@@ -275,8 +289,11 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
         y[i] = invLogTransform(yLog);
         z[i] = invLogTransform(zLog);
     }
+    const meansDecodeTime = performance.now() - meansDecodeStartTime;
+    console.log(`⏱️  Means decoding: ${meansDecodeTime.toFixed(2)}ms`);
 
     // Decode quaternions
+    const quatsDecodeStartTime = performance.now();
     console.log('  Decoding quaternions...');
     const quatsRgba = quatsData.rgba;
 
@@ -297,8 +314,11 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
         rot_2[i] = qz;
         rot_3[i] = qw;
     }
+    const quatsDecodeTime = performance.now() - quatsDecodeStartTime;
+    console.log(`⏱️  Quaternions decoding: ${quatsDecodeTime.toFixed(2)}ms`);
 
     // Decode scales (codebook lookup)
+    const scalesDecodeStartTime = performance.now();
     console.log('  Decoding scales...');
     const scalesRgba = scalesData.rgba;
     const scalesCodebook = new Float32Array(meta.scales.codebook);
@@ -309,8 +329,11 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
         scale_1[i] = scalesCodebook[scalesRgba[o + 1]];
         scale_2[i] = scalesCodebook[scalesRgba[o + 2]];
     }
+    const scalesDecodeTime = performance.now() - scalesDecodeStartTime;
+    console.log(`⏱️  Scales decoding: ${scalesDecodeTime.toFixed(2)}ms`);
 
     // Decode colors and opacity (codebook lookup)
+    const colorsDecodeStartTime = performance.now();
     console.log('  Decoding colors and opacity...');
     const sh0Rgba = sh0Data.rgba;
     const colorsCodebook = new Float32Array(meta.sh0.codebook);
@@ -323,8 +346,11 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
         // Opacity: stored as sigmoid(opacity), convert back to logit
         opacity[i] = sigmoidInv(sh0Rgba[o + 3] / 255);
     }
+    const colorsDecodeTime = performance.now() - colorsDecodeStartTime;
+    console.log(`⏱️  Colors/opacity decoding: ${colorsDecodeTime.toFixed(2)}ms`);
 
     // Decode motion vectors
+    const motionDecodeStartTime = performance.now();
     console.log('  Decoding motion vectors...');
     const motionLRgba = motionL.rgba;
     const motionURgba = motionU.rgba;
@@ -340,8 +366,11 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
         motion_1[i] = invLogTransform(m1Log);
         motion_2[i] = invLogTransform(m2Log);
     }
+    const motionDecodeTime = performance.now() - motionDecodeStartTime;
+    console.log(`⏱️  Motion vectors decoding: ${motionDecodeTime.toFixed(2)}ms`);
 
     // Decode TRBF parameters
+    const trbfDecodeStartTime = performance.now();
     console.log('  Decoding TRBF parameters...');
     
     if (trbfIsKmeans && trbfData) {
@@ -370,6 +399,8 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
             trbf_scale[i] = Math.exp(scaleLog);
         }
     }
+    const trbfDecodeTime = performance.now() - trbfDecodeStartTime;
+    console.log(`⏱️  TRBF decoding: ${trbfDecodeTime.toFixed(2)}ms`);
 
     // Build GSplatData
     const properties: any[] = [
@@ -401,13 +432,18 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
     }]);
 
     // Preload segment files into a map for later use
+    const segmentsStartTime = performance.now();
     const zipEntries = new Map<string, ArrayBuffer>();
     for (const segment of meta.segments) {
         const segmentData = await loadFile(segment.url);
         zipEntries.set(segment.url, segmentData);
     }
+    const segmentsTime = performance.now() - segmentsStartTime;
+    console.log(`⏱️  Segments loading (${meta.segments.length} segments): ${segmentsTime.toFixed(2)}ms`);
 
+    const totalParseTime = performance.now() - parseStartTime;
     console.log('✅ SOG4D parsing complete');
+    console.log(`⏱️  Total parsing time: ${totalParseTime.toFixed(2)}ms`);
 
     return { gsplatData, meta, zipEntries };
 };
@@ -416,14 +452,21 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
  * Load SOG4D file and create Asset
  */
 const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device: any): Promise<Asset> => {
+    const totalStartTime = performance.now();
     console.log('🔄 Loading SOG4D file...');
 
     // Load file data
+    const loadStartTime = performance.now();
     const source = await createReadSource(assetSource);
     const zipData = await source.arrayBuffer();
+    const loadTime = performance.now() - loadStartTime;
+    console.log(`⏱️  SOG4D file download/read: ${loadTime.toFixed(2)}ms`);
 
     // Parse SOG4D
+    const parseStartTime = performance.now();
     const { gsplatData, meta, zipEntries } = await parseSog4d(zipData);
+    const parseTime = performance.now() - parseStartTime;
+    console.log(`⏱️  SOG4D parsing total: ${parseTime.toFixed(2)}ms`);
 
     // Create DynManifest compatible structure
     const dynManifest: DynManifest = {
@@ -501,6 +544,8 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
 
         // Use setTimeout to ensure event handlers are registered first
         setTimeout(() => {
+            const totalTime = performance.now() - totalStartTime;
+            console.log(`⏱️  SOG4D loading total time: ${totalTime.toFixed(2)}ms`);
             asset.fire('load', asset);
             resolve(asset);
         }, 0);

@@ -26,10 +26,6 @@ class Ticks extends Container {
 
         // rebuild the timeline
         const rebuild = () => {
-            console.log('🔄 Timeline rebuild() called');
-            console.log('  Has timeline.frames?', events.functions.has('timeline.frames'));
-            console.log('  Has timeline.frame?', events.functions.has('timeline.frame'));
-            
             // clear existing labels
             workArea.dom.innerHTML = '';
 
@@ -168,16 +164,11 @@ class Ticks extends Container {
             }
         });
         // Use requestAnimationFrame to delay observation until after timeline registration
-        console.log('⏳ Scheduling timeline rebuild via requestAnimationFrame...');
         requestAnimationFrame(() => {
-            console.log('🎬 requestAnimationFrame callback executing');
             resizeObserver.observe(workArea.dom);
             // Initial rebuild after timeline is registered
             if (events.functions.has('timeline.frames')) {
-                console.log('✅ timeline.frames exists, calling rebuild()');
                 rebuild();
-            } else {
-                console.warn('⚠️ timeline.frames NOT registered yet, skipping rebuild()');
             }
         });
 

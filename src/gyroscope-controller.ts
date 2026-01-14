@@ -110,7 +110,6 @@ class GyroscopeController {
         window.addEventListener('deviceorientation', this.listener);
 
         this._enabled = true;
-        console.log('Gyroscope control enabled');
 
         return true;
     }
