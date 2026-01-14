@@ -194,7 +194,11 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
         if (!file) {
             throw new Error(`Missing file in SOG4D: ${name}`);
         }
-        return await file.async('arraybuffer');
+        const data = await file.async('arraybuffer');
+        // Log file size for debugging
+        const sizeKB = (data.byteLength / 1024).toFixed(2);
+        console.log(`  📦 ${name}: ${sizeKB} KB`);
+        return data;
     };
 
     // Parse meta.json
@@ -214,6 +218,7 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
     const count = meta.count;
 
     // Load and decode WebP images (common files)
+    console.log('  Loading and decoding 7 common WebP files...');
     const webpStartTime = performance.now();
     const [
         meansL, meansU,
@@ -231,7 +236,7 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
         loadFile('motion_u.webp').then(decodeWebP)
     ]);
     const webpTime = performance.now() - webpStartTime;
-    console.log(`⏱️  WebP decoding (7 files): ${webpTime.toFixed(2)}ms`);
+    console.log(`⏱️  WebP decoding (7 files, parallel): ${webpTime.toFixed(2)}ms`);
 
     // Load TRBF data (different files depending on encoding mode)
     const trbfIsKmeans = meta.trbf.encoding === 'kmeans';
@@ -239,6 +244,7 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
     let trbfL: { rgba: Uint8Array, width: number, height: number } | null = null;
     let trbfU: { rgba: Uint8Array, width: number, height: number } | null = null;
 
+    console.log(`  Loading TRBF WebP (mode: ${trbfIsKmeans ? 'kmeans (1 file)' : 'quantize16 (2 files)'})...`);
     const trbfWebpStartTime = performance.now();
     if (trbfIsKmeans) {
         trbfData = await loadFile('trbf.webp').then(decodeWebP);
@@ -249,7 +255,8 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
         ]);
     }
     const trbfWebpTime = performance.now() - trbfWebpStartTime;
-    console.log(`⏱️  TRBF WebP decoding: ${trbfWebpTime.toFixed(2)}ms`);
+    const trbfFileCount = trbfIsKmeans ? 1 : 2;
+    console.log(`⏱️  TRBF WebP decoding (${trbfFileCount} file${trbfFileCount > 1 ? 's' : ''}, ${trbfIsKmeans ? 'sequential' : 'parallel'}): ${trbfWebpTime.toFixed(2)}ms`);
 
     // Allocate output arrays
     const x = new Float32Array(count);
