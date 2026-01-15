@@ -1,5 +1,6 @@
 import { Color, createGraphicsDevice } from 'playcanvas';
 
+import { registerBackgroundEvents } from './background-handler';
 import { registerCameraPosesEvents } from './camera-poses';
 import { registerDocEvents } from './doc';
 import { EditHistory } from './edit-history';
@@ -260,6 +261,7 @@ const main = async () => {
     registerPublishEvents(events);
     registerDocEvents(scene, events);
     registerRenderEvents(scene, events);
+    registerBackgroundEvents(scene, events);
     registerIframeApi(events);
     initShortcuts(events);
     initFileHandler(scene, events, editorUI.appContainer.dom);

@@ -43,6 +43,8 @@
     "panel.scene-manager.transform.position": "位置",
     "panel.scene-manager.transform.rotation": "旋转",
     "panel.scene-manager.transform.scale": "缩放",
+    "panel.scene-manager.background": "背景",
+    "panel.scene-manager.background.import": "导入立方体贴图",
     "panel.colors": "颜色",
     "panel.colors.tint": "色调",
     "panel.colors.temperature": "温度",

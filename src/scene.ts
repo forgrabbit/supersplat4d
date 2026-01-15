@@ -143,11 +143,13 @@ class Scene {
         });
 
         // background layer
+        // CRITICAL: Background layer should render first and not clear depth buffer
         this.backgroundLayer = new Layer({
             enabled: true,
             name: 'Background Layer',
             opaqueSortMode: SORTMODE_NONE,
-            transparentSortMode: SORTMODE_NONE
+            transparentSortMode: SORTMODE_NONE,
+            clearDepthBuffer: false // Don't clear depth, so it renders behind everything
         });
 
         // shadow layer

@@ -3,6 +3,7 @@ import { Container, ContainerArgs, Element, Label } from '@playcanvas/pcui';
 import { Events } from '../events';
 import { localize } from './localization';
 import { SplatList } from './splat-list';
+import { BackgroundList } from './background-list';
 import sceneImportSvg from './svg/import.svg';
 import sceneNewSvg from './svg/new.svg';
 import { Tooltips } from './tooltips';
@@ -102,6 +103,45 @@ class ScenePanel extends Container {
         if (!isMobile) {
             this.append(transformHeader);
             this.append(new Transform(events));
+
+            // Background section
+            const backgroundHeader = new Container({
+                class: 'panel-header'
+            });
+
+            const backgroundIcon = new Label({
+                text: '\uE344',
+                class: 'panel-header-icon'
+            });
+
+            const backgroundLabel = new Label({
+                text: localize('panel.scene-manager.background'),
+                class: 'panel-header-label'
+            });
+
+            const backgroundImport = new Container({
+                class: 'panel-header-button'
+            });
+            backgroundImport.dom.appendChild(createSvg(sceneImportSvg));
+
+            backgroundHeader.append(backgroundIcon);
+            backgroundHeader.append(backgroundLabel);
+            backgroundHeader.append(backgroundImport);
+
+            backgroundImport.on('click', async () => {
+                await events.invoke('background.import');
+            });
+
+            tooltips.register(backgroundImport, localize('panel.scene-manager.background.import'), 'top');
+
+            const backgroundList = new BackgroundList(events);
+            const backgroundListContainer = new Container({
+                class: 'background-list-container'
+            });
+            backgroundListContainer.append(backgroundList);
+
+            this.append(backgroundHeader);
+            this.append(backgroundListContainer);
             this.append(new Element({
                 class: 'panel-header',
                 height: 20

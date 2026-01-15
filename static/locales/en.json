@@ -43,6 +43,8 @@
     "panel.scene-manager.transform.position": "Position",
     "panel.scene-manager.transform.rotation": "Rotation",
     "panel.scene-manager.transform.scale": "Scale",
+    "panel.scene-manager.background": "Background",
+    "panel.scene-manager.background.import": "Import Cubemap",
     "panel.colors": "Colors",
     "panel.colors.tint": "Tint",
     "panel.colors.temperature": "Temperature",

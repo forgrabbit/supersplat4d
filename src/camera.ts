@@ -92,6 +92,7 @@ class Camera extends Element {
         // create the camera entity
         this.entity = new Entity('Camera');
         this.entity.addComponent('camera');
+        this.entity.camera.farClip = 5000;
 
         // NOTE: this call is needed for refraction effect to work correctly, but
         // it slows rendering and should only be made when required.
@@ -251,11 +252,14 @@ class Camera extends Element {
 
     add() {
         this.scene.cameraRoot.addChild(this.entity);
-        this.entity.camera.layers = this.entity.camera.layers.concat([
+        const originalLayers = this.entity.camera.layers;
+        const newLayers = this.entity.camera.layers.concat([
+            this.scene.backgroundLayer.id,
             this.scene.shadowLayer.id,
             this.scene.debugLayer.id,
             this.scene.gizmoLayer.id
         ]);
+        this.entity.camera.layers = newLayers;
 
         if (this.scene.config.camera.debugRender) {
             this.entity.camera.setShaderPass(`debug_${this.scene.config.camera.debugRender}`);

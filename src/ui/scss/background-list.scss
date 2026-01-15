@@ -1,0 +1,78 @@
+@use 'colors.scss' as *;
+
+.background-list {
+    min-height: 80px;
+    padding: 4px 0px;
+
+    .background-item {
+        display: flex;
+        flex-direction: row;
+        padding: 2px;
+
+        &:hover:not(.selected).visible {
+            cursor: pointer;
+        }
+
+        &.selected {
+            background-color: $bcg-darker;
+        }
+
+        .background-item-text {
+            flex-grow: 1;
+            flex-shrink: 1;
+
+            .visible & {
+                &:hover:not(.selected) {
+                    color: $text-primary;
+                }
+            }
+
+            .selected & {
+                color: $text-primary;
+            }
+        }
+
+        .background-item-visible {
+            flex-grow: 0;
+            flex-shrink: 0;
+
+            width: 24px;
+            height: 24px;
+            line-height: 24px;
+
+            color: $text-secondary;
+
+            cursor: pointer;
+
+            .visible & {
+                color: $text-secondary;
+            }
+
+            &:hover {
+                color: $text-primary;
+            }
+        }
+
+        .background-item-delete {
+            flex-grow: 0;
+            flex-shrink: 0;
+
+            padding: 4px;
+            width: 16px;
+            height: 16px;
+            line-height: 16px;
+
+            color: $text-secondary;
+
+            cursor: pointer;
+
+            &:hover {
+                color: $text-primary;
+            }
+        }
+    }
+}
+
+.background-list-container {
+    min-height: 0;
+}
