@@ -253,3 +253,23 @@ body {
     font-weight: bold;
     font-style: normal;
 }
+
+// Global override for panel collapse icons to ensure they use the new theme color
+// Override PCUI's default .pcui-panel-header::before pseudo-element
+.pcui-panel.pcui-collapsible > .pcui-panel-header::before,
+.panel .panel-header-icon,
+.panel .panel-header-button,
+#data-panel .panel-header-icon,
+#data-panel .panel-header-button,
+#data-panel > .panel-header > .panel-header-icon,
+#data-panel > .panel-header > .panel-header-button {
+    color: #937EE2 !important;
+}
+
+.panel .panel-header-button svg,
+#data-panel .panel-header-button svg,
+#data-panel > .panel-header > .panel-header-button svg {
+    color: #937EE2 !important;
+    fill: #937EE2 !important;
+    stroke: #937EE2 !important;
+}

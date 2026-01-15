@@ -5,6 +5,42 @@
     height: 320px;
     
     // Override collapse button color to match new theme
+    // Target PCUI's ::before pseudo-element specifically
+    &.pcui-collapsible > .pcui-panel-header::before {
+        color: $clr-hilight !important;
+    }
+    
+    // Use more specific selectors to override PCUI defaults
+    > .panel-header {
+        > .panel-header-icon {
+            color: $clr-hilight !important;
+        }
+        
+        > .panel-header-button {
+            color: $clr-hilight !important;
+            
+            svg {
+                color: $clr-hilight !important;
+                fill: $clr-hilight !important;
+            }
+            
+            &:hover {
+                color: $clr-hilight !important;
+                
+                svg {
+                    color: $clr-hilight !important;
+                    fill: $clr-hilight !important;
+                }
+            }
+        }
+        
+        // Also target ::before pseudo-element
+        &::before {
+            color: $clr-hilight !important;
+        }
+    }
+    
+    // Also target nested elements
     .panel-header-icon {
         color: $clr-hilight !important;
     }
@@ -14,10 +50,16 @@
         
         svg {
             color: $clr-hilight !important;
+            fill: $clr-hilight !important;
         }
         
         &:hover {
             color: $clr-hilight !important;
+            
+            svg {
+                color: $clr-hilight !important;
+                fill: $clr-hilight !important;
+            }
         }
     }
 }

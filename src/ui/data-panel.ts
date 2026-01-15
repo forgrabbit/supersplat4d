@@ -82,6 +82,41 @@ class DataPanel extends Panel {
 
         super(args);
 
+        // Force set collapse icon color to match new theme
+        // Use requestAnimationFrame to ensure DOM is ready
+        requestAnimationFrame(() => {
+            const headerIcon = this.dom.querySelector('.panel-header-icon');
+            const headerButton = this.dom.querySelector('.panel-header-button');
+            const panelHeader = this.dom.querySelector('.pcui-panel-header');
+            
+            if (headerIcon) {
+                (headerIcon as HTMLElement).style.color = '#937EE2';
+            }
+            if (headerButton) {
+                (headerButton as HTMLElement).style.color = '#937EE2';
+                const svg = headerButton.querySelector('svg');
+                if (svg) {
+                    (svg as SVGElement).style.color = '#937EE2';
+                    (svg as SVGElement).style.fill = '#937EE2';
+                }
+            }
+            // Set ::before pseudo-element color via CSS custom property or style sheet
+            if (panelHeader) {
+                // Create a style element to override ::before pseudo-element
+                const styleId = 'data-panel-header-before-override';
+                if (!document.getElementById(styleId)) {
+                    const style = document.createElement('style');
+                    style.id = styleId;
+                    style.textContent = `
+                        #data-panel.pcui-collapsible > .pcui-panel-header::before {
+                            color: #937EE2 !important;
+                        }
+                    `;
+                    document.head.appendChild(style);
+                }
+            }
+        });
+
         // build the data controls
         const controlsContainer = new Container({
             id: 'data-controls-container'
