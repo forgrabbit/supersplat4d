@@ -66,7 +66,7 @@ const application = {
                 { src: 'static/lib', dest: 'static' },
                 { src: 'static/locales', dest: 'static' },
                 { src: 'static/env/VertebraeHDRI_v1_512.png', dest: 'static/env' },
-                { src: 'public/ruan_4.sog4d' }  // Copy demo model
+                { src: 'public/ski_3_bg.sog4d' }  // Copy demo model
             ]
         }),
         alias({

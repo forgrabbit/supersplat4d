@@ -74,6 +74,12 @@ class Camera extends Element {
 
     flySpeed = 5;
 
+    // Dynamic FOV adjustment based on distance
+    baseFOV: number = 65;
+    fovWeight: number = 0.2; // Weight factor: 10% distance change = 2% FOV change
+    minFOV: number = 55; // Minimum FOV when zoomed in
+    maxFOV: number = 75; // Maximum FOV when zoomed out
+
     picker: Picker;
 
     workRenderTarget: RenderTarget;
@@ -227,6 +233,36 @@ class Camera extends Element {
         t.goto({ distance }, dampingFactorFactor * controls.dampingFactor);
     }
 
+    // Update FOV dynamically based on camera distance
+    // When zooming in (distance decreases), FOV decreases (narrower view)
+    // When zooming out (distance increases), FOV increases (wider view)
+    // Weight factor: 10% distance change = 2% FOV change (when fovWeight = 0.2)
+    private updateDynamicFOV(distance: number) {
+        const controls = this.scene.config.controls;
+        
+        // Get the initial/center distance (used as reference point)
+        // We use initialZoom as the reference point where FOV = baseFOV
+        const referenceDistance = controls.initialZoom;
+        
+        // Calculate distance change as percentage from reference
+        // If distance < referenceDistance, we're zoomed in (negative change)
+        // If distance > referenceDistance, we're zoomed out (positive change)
+        const distanceChangePercent = (distance - referenceDistance) / referenceDistance;
+        
+        // Apply weight: distance change percentage * weight = FOV change percentage
+        // Example: distanceChangePercent = -0.1 (10% zoom in), fovWeight = 0.2
+        // → fovChangePercent = -0.02 (2% FOV decrease)
+        const fovChangePercent = distanceChangePercent * this.fovWeight;
+        
+        // Calculate dynamic FOV: baseFOV * (1 + fovChangePercent)
+        // When zoomed in (distanceChangePercent < 0), fovChangePercent < 0, FOV decreases
+        // When zoomed out (distanceChangePercent > 0), fovChangePercent > 0, FOV increases
+        const dynamicFOV = this.baseFOV * (1 + fovChangePercent);
+        
+        // Clamp FOV to valid range for safety
+        this.fov = Math.max(this.minFOV, Math.min(this.maxFOV, dynamicFOV));
+    }
+
     setPose(position: Vec3, target: Vec3, dampingFactorFactor: number = 1) {
         vec.sub2(target, position);
         const l = vec.length();
@@ -328,6 +364,8 @@ class Camera extends Element {
         // exposure
         this.scene.app.scene.exposure = config.camera.exposure;
 
+        // Save base FOV and set initial FOV
+        this.baseFOV = config.camera.fov;
         this.fov = config.camera.fov;
 
         // initial camera position and orientation
@@ -511,6 +549,9 @@ class Camera extends Element {
 
         const azimElev = this.azimElevTween.value;
         const distance = this.distanceTween.value;
+
+        // Update FOV based on distance (smooth adjustment)
+        this.updateDynamicFOV(distance.distance);
 
         calcForwardVec(forwardVec, azimElev.azim, azimElev.elev);
         cameraPosition.copy(forwardVec);

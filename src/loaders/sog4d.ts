@@ -81,6 +81,12 @@ interface Sog4dMeta {
         url: string;
         count: number;
     }>;
+    
+    // Optional cubemap background
+    cubemap?: {
+        file: string;
+        format: string;  // e.g., 'horizontal_cross'
+    };
 }
 
 // =============================================================================
@@ -178,7 +184,7 @@ let assetId = 0;
 /**
  * Parse SOG4D ZIP file and create GSplatData
  */
-const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatData, meta: Sog4dMeta, zipEntries: Map<string, ArrayBuffer> }> => {
+const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatData, meta: Sog4dMeta, zipEntries: Map<string, ArrayBuffer>, cubemapData?: ArrayBuffer }> => {
     const parseStartTime = performance.now();
     console.log('📦 Parsing SOG4D file...');
 
@@ -466,13 +472,25 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
     console.log('✅ SOG4D parsing complete');
     console.log(`⏱️  Total parsing time: ${totalParseTime.toFixed(2)}ms`);
 
-    return { gsplatData, meta, zipEntries };
+    // Extract cubemap if present
+    let cubemapData: ArrayBuffer | undefined = undefined;
+    if (meta.cubemap) {
+        const cubemapFile = zip.file(meta.cubemap.file);
+        if (cubemapFile) {
+            cubemapData = await cubemapFile.async('arraybuffer');
+            console.log(`📦 Found cubemap: ${meta.cubemap.file} (${(cubemapData.byteLength / 1024).toFixed(2)} KB)`);
+        } else {
+            console.warn(`⚠️  Cubemap file '${meta.cubemap.file}' not found in ZIP`);
+        }
+    }
+
+    return { gsplatData, meta, zipEntries, cubemapData };
 };
 
 /**
  * Load SOG4D file and create Asset
  */
-const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device: any): Promise<Asset> => {
+const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device: any, events?: any): Promise<Asset> => {
     const totalStartTime = performance.now();
     console.log('🔄 Loading SOG4D file...');
 
@@ -485,7 +503,7 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
 
     // Parse SOG4D
     const parseStartTime = performance.now();
-    const { gsplatData, meta, zipEntries } = await parseSog4d(zipData);
+    const { gsplatData, meta, zipEntries, cubemapData } = await parseSog4d(zipData);
     const parseTime = performance.now() - parseStartTime;
     console.log(`⏱️  SOG4D parsing total: ${parseTime.toFixed(2)}ms`);
 
@@ -564,10 +582,33 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
         (asset as any)._loading = false;
 
         // Use setTimeout to ensure event handlers are registered first
-        setTimeout(() => {
+        setTimeout(async () => {
             const totalTime = performance.now() - totalStartTime;
             console.log(`⏱️  SOG4D loading total time: ${totalTime.toFixed(2)}ms`);
             asset.fire('load', asset);
+            
+            // Auto-load cubemap if present
+            if (cubemapData && meta.cubemap && events) {
+                try {
+                    console.log('🌌 Auto-loading cubemap from SOG4D...');
+                    // Create a File object from the cubemap data
+                    // Determine MIME type from filename extension
+                    // Cubemap is converted to WebP in Python script, so it should be .webp
+                    const ext = meta.cubemap.file.toLowerCase().split('.').pop();
+                    const mimeType = ext === 'webp' ? 'image/webp' : ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/webp';
+                    const blob = new Blob([cubemapData], { type: mimeType });
+                    const file = new File([blob], meta.cubemap.file, { type: mimeType });
+                    
+                    // Import cubemap using background handler
+                    await events.invoke('background.importFromFile', file);
+                    // Auto-show the cubemap
+                    await events.invoke('background.autoShow', meta.cubemap.file);
+                    console.log('✅ Cubemap auto-loaded and displayed');
+                } catch (error) {
+                    console.warn('⚠️  Failed to auto-load cubemap:', error);
+                }
+            }
+            
             resolve(asset);
         }, 0);
     });

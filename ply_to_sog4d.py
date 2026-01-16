@@ -851,7 +851,8 @@ def compute_segments(data: SplatData, cfg: Dict[str, float], segment_duration: f
 # =============================================================================
 
 def write_sog4d(output_path: str, data: SplatData, cfg: Dict[str, float],
-                segment_duration: float, opacity_threshold: float, trbf_kmeans: bool = True):
+                segment_duration: float, opacity_threshold: float, trbf_kmeans: bool = True,
+                cubemap_path: Optional[str] = None):
     """Write compressed .sog4d file.
     
     Args:
@@ -862,6 +863,8 @@ def write_sog4d(output_path: str, data: SplatData, cfg: Dict[str, float],
         opacity_threshold: Opacity threshold for segment computation
         trbf_kmeans: If True, use k-means clustering for TRBF (better compression).
                      If False, use 16-bit quantization (higher precision).
+        cubemap_path: Optional path to cubemap image file (horizontal cross layout).
+                      If provided, will be included in the .sog4d file and auto-loaded by the viewer.
     """
 
     print("\nSorting by Morton order...")
@@ -917,14 +920,20 @@ def write_sog4d(output_path: str, data: SplatData, cfg: Dict[str, float],
         'segments': [{'t0': s[0]['t0'], 't1': s[0]['t1'], 'url': f'segments/seg_{i:03d}.act', 'count': s[0]['count']}
                      for i, s in enumerate(segments)]
     }
+    
+    # Add cubemap info if provided
+    cubemap_filename = None
+    if cubemap_path:
+        cubemap_filename = os.path.basename(cubemap_path)
+        meta['cubemap'] = {
+            'file': cubemap_filename,
+            'format': 'horizontal_cross'  # Assume horizontal cross layout
+        }
 
     # Write ZIP file
     print(f"\nWriting {output_path}...")
 
     with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        # Meta
-        zf.writestr('meta.json', json.dumps(meta, indent=2))
-
         # Static gaussian textures
         zf.writestr('means_l.webp', means_l)
         zf.writestr('means_u.webp', means_u)
@@ -946,6 +955,44 @@ def write_sog4d(output_path: str, data: SplatData, cfg: Dict[str, float],
         # Segments
         for i, (_, indices_bytes) in enumerate(segments):
             zf.writestr(f'segments/seg_{i:03d}.act', indices_bytes)
+        
+        # Cubemap (if provided) - Process BEFORE writing meta.json so filename is updated
+        if cubemap_path:
+            print(f"  Adding cubemap: {cubemap_filename}")
+            # Convert to WebP for better compression (same as other textures)
+            try:
+                img = Image.open(cubemap_path)
+                # Convert RGBA to RGB if needed (WebP supports both)
+                if img.mode == 'RGBA':
+                    # Keep RGBA for transparency support
+                    pass
+                elif img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                # Save as WebP (lossless for quality, same as other textures)
+                buf = io.BytesIO()
+                img.save(buf, format='WEBP', lossless=True)
+                cubemap_data = buf.getvalue()
+                
+                # Update filename to .webp extension in meta
+                cubemap_webp_filename = os.path.splitext(cubemap_filename)[0] + '.webp'
+                meta['cubemap']['file'] = cubemap_webp_filename
+                original_size = os.path.getsize(cubemap_path)
+                new_size = len(cubemap_data)
+                compression_ratio = (1 - new_size / original_size) * 100
+                print(f"    Converted to WebP: {new_size / 1024:.2f} KB (original: {original_size / 1024:.2f} KB, {compression_ratio:+.1f}%)")
+                
+                zf.writestr(cubemap_webp_filename, cubemap_data)
+            except Exception as e:
+                print(f"    Warning: Failed to convert cubemap to WebP: {e}")
+                print(f"    Using original file format instead")
+                # Fallback: use original file (meta already has original filename)
+                with open(cubemap_path, 'rb') as f:
+                    cubemap_data = f.read()
+                zf.writestr(cubemap_filename, cubemap_data)
+        
+        # Write meta.json AFTER processing cubemap so filename is correct
+        zf.writestr('meta.json', json.dumps(meta, indent=2))
 
     # Print size info
     file_size = os.path.getsize(output_path)
@@ -983,6 +1030,10 @@ def main():
                         help='Disable k-means clustering for TRBF (use 16-bit quantization instead)')
     parser.add_argument('--filter_opacity', action='store_true',
                         help='Disable filtering of low opacity splats')
+    parser.add_argument('--cubemap', type=str, default=None,
+                        help='Path to cubemap image file (horizontal cross layout). '
+                             'If provided, will be converted to WebP and included in .sog4d, '
+                             'then auto-loaded by the viewer.')
 
     args = parser.parse_args()
 
@@ -1027,9 +1078,16 @@ def main():
     if not output_path.lower().endswith('.sog4d'):
         output_path += '.sog4d'
 
+    # Validate cubemap path if provided
+    cubemap_path = args.cubemap
+    if cubemap_path:
+        if not os.path.exists(cubemap_path):
+            raise ValueError(f"Cubemap file not found: {cubemap_path}")
+        print(f"Including cubemap: {cubemap_path}")
+    
     # Write sog4d
     trbf_kmeans = not getattr(args, 'no_trbf_kmeans', False)
-    write_sog4d(output_path, data, cfg, args.segment_duration, args.opacity_threshold, trbf_kmeans)
+    write_sog4d(output_path, data, cfg, args.segment_duration, args.opacity_threshold, trbf_kmeans, cubemap_path)
 
     print("\nDone!")
 

@@ -291,8 +291,8 @@ const main = async () => {
         console.log('🎬 Auto-loading demo dynamic Gaussian Splat...');
         try {
             await events.invoke('import', [{
-                filename: 'ruan_4.sog4d',
-                url: './ruan_4.sog4d'
+                filename: 'ski_3_bg.sog4d',
+                url: './ski_3_bg.sog4d'
             }]);
         } catch (error) {
             console.warn('⚠️ Failed to auto-load demo data:', error);

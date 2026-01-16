@@ -55,7 +55,7 @@ class AssetLoader {
             } else if (filename.endsWith('.dyn.json')) {
                 asset = await loadDyn(this.app.assets, assetSource, this.app.graphicsDevice);
             } else if (filename.endsWith('.sog4d')) {
-                asset = await loadSog4d(this.app.assets, assetSource, this.app.graphicsDevice);
+                asset = await loadSog4d(this.app.assets, assetSource, this.app.graphicsDevice, this.events);
             } else if (filename.endsWith('.ply')) {
                 // Check if PLY is dynamic (has trbf_center, trbf_scale, motion_*)
                 const { isDynamic, cfgArgs } = await checkPlyIsDynamic(assetSource);
