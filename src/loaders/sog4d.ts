@@ -12,12 +12,14 @@
  *   - segments/seg_XXX.act: Time segment active indices
  */
 
-import { Asset, AssetRegistry, GSplatData, GSplatResource } from 'playcanvas';
+import { Asset, AssetRegistry, GSplatData, GSplatResource, Vec3 } from 'playcanvas';
 // JSZip is loaded globally via script tag in index.html
 declare const JSZip: any;
 
 import { AssetSource, createReadSource } from './asset-source';
 import type { DynManifest } from './dyn';
+
+const defaultOrientation = new Vec3(0, 0, 180);
 
 // =============================================================================
 // Types
@@ -183,8 +185,9 @@ let assetId = 0;
 
 /**
  * Parse SOG4D ZIP file and create GSplatData
+ * Returns either single splat data or multi-splat indicator
  */
-const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatData, meta: Sog4dMeta, zipEntries: Map<string, ArrayBuffer>, cubemapData?: ArrayBuffer }> => {
+const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatData, meta?: Sog4dMeta, zipEntries?: Map<string, ArrayBuffer>, cubemapData?: ArrayBuffer, isMulti?: boolean, mainMeta?: any, zip?: any }> => {
     const parseStartTime = performance.now();
     console.log('📦 Parsing SOG4D file...');
 
@@ -210,13 +213,21 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData: GSplatDat
     // Parse meta.json
     const metaStartTime = performance.now();
     const metaJson = await loadFile('meta.json');
-    const meta: Sog4dMeta = JSON.parse(new TextDecoder().decode(metaJson));
+    const mainMeta: any = JSON.parse(new TextDecoder().decode(metaJson));
     const metaTime = performance.now() - metaStartTime;
     console.log(`⏱️  Meta.json parsing: ${metaTime.toFixed(2)}ms`);
 
-    if (meta.type !== 'sog4d') {
-        throw new Error(`Expected type 'sog4d', got '${meta.type}'`);
+    // Check if this is a multi-splat format
+    if (mainMeta.type === 'sog4d_multi') {
+        // This is a multi-splat file, return indicator for special handling
+        return { isMulti: true, mainMeta, zip };
     }
+
+    if (mainMeta.type !== 'sog4d') {
+        throw new Error(`Expected type 'sog4d' or 'sog4d_multi', got '${mainMeta.type}'`);
+    }
+
+    const meta: Sog4dMeta = mainMeta;
 
     console.log(`📊 SOG4D: ${meta.count} splats, ${meta.width}x${meta.height} texture`);
     console.log(`📊 Duration: ${meta.duration}s @ ${meta.fps} fps`);
@@ -503,9 +514,34 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
 
     // Parse SOG4D
     const parseStartTime = performance.now();
-    const { gsplatData, meta, zipEntries, cubemapData } = await parseSog4d(zipData);
+    const parseResult = await parseSog4d(zipData);
     const parseTime = performance.now() - parseStartTime;
     console.log(`⏱️  SOG4D parsing total: ${parseTime.toFixed(2)}ms`);
+
+    // Check if this is a multi-splat file
+    if (parseResult.isMulti) {
+        // Handle multi-splat format
+        // parseSog4dMulti now loads static splats first, then dynamic splat
+        // So loadedAssets = [static1, static2, ..., dynamic]
+        const multiAssets = await parseSog4dMulti(parseResult.zip!, parseResult.mainMeta!, assetSource, assets, device, events);
+        
+        // Return the last asset (dynamic) so it will be added to scene first
+        // Then static splats will be added via _pendingMultiSplatAssets
+        // This ensures dynamic splat is added last and gets selected automatically
+        const dynamicAsset = multiAssets[multiAssets.length - 1];
+        const staticAssets = multiAssets.slice(0, -1);
+        
+        // Store static assets for later loading (they will be added before dynamic)
+        if (events && staticAssets.length > 0) {
+            (events as any)._pendingMultiSplatAssets = staticAssets;
+        }
+        
+        // Return dynamic asset (will be added to scene last, so it gets selected)
+        return dynamicAsset;
+    }
+
+    // Single splat format (backward compatible)
+    const { gsplatData, meta, zipEntries, cubemapData } = parseResult;
 
     // Create DynManifest compatible structure
     const dynManifest: DynManifest = {
@@ -614,5 +650,133 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
     });
 };
 
-export { loadSog4d };
+/**
+ * Parse multi-splat SOG4D file and load all splats
+ * This function extracts each splat as a separate virtual SOG4D/SOG file and loads them
+ */
+const parseSog4dMulti = async (zip: any, mainMeta: any, assetSource: AssetSource, assets: AssetRegistry, device: any, events?: any): Promise<Asset[]> => {
+    console.log('📦 Parsing multi-splat SOG4D file...');
+    console.log(`  Dynamic: ${mainMeta.dynamic ? 'Yes' : 'No'}`);
+    console.log(`  Static splats: ${mainMeta.static ? Object.keys(mainMeta.static).length : 0}`);
+    
+    const loadedAssets: Asset[] = [];
+
+    // Load static splats FIRST (so dynamic splat will be selected last)
+    if (mainMeta.static) {
+        const staticNames = Object.keys(mainMeta.static);
+        for (const staticName of staticNames) {
+            console.log(`🔄 Loading ${staticName}...`);
+            
+            // Extract static folder as a virtual SOG file
+            // Check if static folder exists
+            const hasStaticFiles = Object.keys(zip.files).some((path: string) => path.startsWith(`${staticName}/`));
+            if (!hasStaticFiles) {
+                throw new Error(`Missing ${staticName}/ folder in multi-splat SOG4D`);
+            }
+            
+            const staticZip = new JSZip();
+            const staticFilePromises: Promise<void>[] = [];
+            
+            // Iterate over all files in the main zip and filter by path starting with staticName/
+            Object.keys(zip.files).forEach((path: string) => {
+                if (path.startsWith(`${staticName}/`) && !path.endsWith('/')) {
+                    const file = zip.file(path);
+                    if (file) {
+                        const cleanPath = path.replace(new RegExp(`^${staticName}/`), '');
+                        const promise = file.async('arraybuffer').then((data: ArrayBuffer) => {
+                            staticZip.file(cleanPath, data);
+                        });
+                        staticFilePromises.push(promise);
+                    }
+                }
+            });
+            
+            await Promise.all(staticFilePromises);
+            const staticZipBlob = await staticZip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+            const staticZipArrayBuffer = await staticZipBlob.arrayBuffer();
+            
+            // Create virtual asset source
+            const virtualStaticSource: AssetSource = {
+                filename: `${staticName}.sog`,
+                url: '',
+                contents: staticZipArrayBuffer
+            };
+            
+            // Load static SOG using GSplat loader (which handles SOG format)
+            const { loadGsplat } = await import('./gsplat');
+            const staticAsset = await loadGsplat(assets, virtualStaticSource);
+            loadedAssets.push(staticAsset);
+        }
+    }
+
+    // Load dynamic splat LAST (so it will be selected automatically)
+    if (mainMeta.dynamic) {
+        console.log('🔄 Loading dynamic splat...');
+        
+        // Extract dynamic/ folder as a virtual SOG4D file
+        // Check if dynamic folder exists by checking for any file starting with 'dynamic/'
+        const hasDynamicFiles = Object.keys(zip.files).some((path: string) => path.startsWith('dynamic/'));
+        if (!hasDynamicFiles) {
+            throw new Error('Missing dynamic/ folder in multi-splat SOG4D');
+        }
+        
+        // Create a virtual ZIP from dynamic folder
+        const dynamicZip = new JSZip();
+        const dynamicFilePromises: Promise<void>[] = [];
+        
+        // Iterate over all files in the main zip and filter by path starting with 'dynamic/'
+        Object.keys(zip.files).forEach((path: string) => {
+            if (path.startsWith('dynamic/') && !path.endsWith('/')) {
+                const file = zip.file(path);
+                if (file) {
+                    const cleanPath = path.replace(/^dynamic\//, '');
+                    const promise = file.async('arraybuffer').then((data: ArrayBuffer) => {
+                        dynamicZip.file(cleanPath, data);
+                    });
+                    dynamicFilePromises.push(promise);
+                }
+            }
+        });
+        
+        await Promise.all(dynamicFilePromises);
+        const dynamicZipBlob = await dynamicZip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+        const dynamicZipArrayBuffer = await dynamicZipBlob.arrayBuffer();
+        
+        // Create virtual asset source with the extracted ZIP
+        const virtualDynamicSource: AssetSource = {
+            filename: 'dynamic.sog4d',
+            url: '',
+            contents: dynamicZipArrayBuffer
+        };
+        
+        // Load dynamic splat using existing loader
+        const dynamicAsset = await loadSog4d(assets, virtualDynamicSource, device, events);
+        loadedAssets.push(dynamicAsset);
+    }
+
+    // Handle cubemap from main meta
+    if (mainMeta.cubemap && events) {
+        try {
+            const cubemapFile = zip.file(mainMeta.cubemap.file);
+            if (cubemapFile) {
+                const cubemapData = await cubemapFile.async('arraybuffer');
+                console.log('🌌 Auto-loading cubemap from multi-splat SOG4D...');
+                const ext = mainMeta.cubemap.file.toLowerCase().split('.').pop();
+                const mimeType = ext === 'webp' ? 'image/webp' : ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/webp';
+                const blob = new Blob([cubemapData], { type: mimeType });
+                const file = new File([blob], mainMeta.cubemap.file, { type: mimeType });
+                
+                await events.invoke('background.importFromFile', file);
+                await events.invoke('background.autoShow', mainMeta.cubemap.file);
+                console.log('✅ Cubemap auto-loaded and displayed');
+            }
+        } catch (error) {
+            console.warn('⚠️  Failed to auto-load cubemap:', error);
+        }
+    }
+
+    return loadedAssets;
+};
+
+export { loadSog4d, parseSog4dMulti };
 export type { Sog4dMeta };

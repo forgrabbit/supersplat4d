@@ -51,6 +51,26 @@
             line-height: 20px;
         }
     }
+    
+    // Compact background list for mobile
+    .background-list-container {
+        max-height: 200px; // Reduced max height for mobile
+    }
+    
+    .background-item {
+        padding: 4px 2px; // Reduced padding
+        
+        .background-item-text {
+            font-size: 11px; // Smaller font
+        }
+        
+        .background-item-visible,
+        .background-item-delete {
+            width: 20px;
+            height: 20px;
+            line-height: 20px;
+        }
+    }
 }
 
 // Only hide scene panel when collapsed on desktop, not on mobile

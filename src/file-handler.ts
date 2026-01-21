@@ -12,6 +12,37 @@ import { serializeDynamicPly, serializeSog4d } from './serialize-dynamic';
 import type { DynamicExportOptions, DynamicExportParams } from './ui/dynamic-export-dialog';
 import { localize } from './ui/localization';
 
+/**
+ * Focus camera on dynamic splat (same logic as frame selection and gyroscope)
+ */
+const focusOnDynamicSplat = (dynamicSplat: Splat) => {
+    if (!dynamicSplat) {
+        return;
+    }
+    
+    // Use localBound (same as frame selection when no selection)
+    const bound = dynamicSplat.localBound;
+    const vec = new Vec3();
+    vec.copy(bound.center);
+    
+    // Transform to world space
+    const worldTransform = dynamicSplat.worldTransform;
+    worldTransform.transformPoint(vec, vec);
+    
+    // Get scale for radius calculation
+    const vec2 = new Vec3();
+    worldTransform.getScale(vec2);
+    
+    // Focus camera (same as frame selection: speed: 1)
+    dynamicSplat.scene.camera.focus({
+        focalPoint: vec,
+        radius: bound.halfExtents.length() * vec2.x,
+        speed: 1
+    });
+    
+    console.log('🎯 Focused camera on dynamic splat');
+};
+
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
 
@@ -267,10 +298,78 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             const loadTime = performance.now() - loadStartTime;
             console.log(`⏱️  Asset loading: ${loadTime.toFixed(2)}ms`);
             
+            // Check if there are pending multi-splat assets to load (static splats)
+            const pendingAssets = (events as any)._pendingMultiSplatAssets;
+            if (pendingAssets && pendingAssets.length > 0) {
+                console.log(`📦 Loading ${pendingAssets.length} static splat(s) from multi-splat file...`);
+                // Clear the pending assets list
+                (events as any)._pendingMultiSplatAssets = undefined;
+                
+                // Add static splats FIRST (before dynamic splat)
+                const { Splat } = await import('./splat');
+                const { Vec3 } = await import('playcanvas');
+                const defaultOrientation = new Vec3(0, 0, 180);
+                
+                for (const additionalAsset of pendingAssets) {
+                    try {
+                        const additionalSplat = new Splat(additionalAsset, defaultOrientation);
+                        scene.add(additionalSplat);
+                        const assetName = (additionalAsset as any).file?.filename || (additionalAsset as any).file?.url || 'unnamed';
+                        console.log(`✅ Added static splat: ${assetName}`);
+                    } catch (error) {
+                        console.warn(`⚠️  Failed to add static splat:`, error);
+                    }
+                }
+            }
+            
+            // Add dynamic splat LAST (so it will be automatically selected)
             const initStartTime = performance.now();
             scene.add(model);
             const initTime = performance.now() - initStartTime;
-            console.log(`⏱️  Splat initialization: ${initTime.toFixed(2)}ms`);
+            console.log(`⏱️  Dynamic splat initialization: ${initTime.toFixed(2)}ms`);
+            
+            // Find the dynamic splat from scene (should be the one we just added)
+            const allSplats = scene.getElementsByType(ElementType.splat) as Splat[];
+            const dynamicSplat = allSplats.find((s: Splat) => s.isDynamic);
+            
+            if (dynamicSplat) {
+                // Wait for segment to load
+                // Check segmentCache directly since it's set when segment loads, even if activeIndices isn't set yet
+                const maxWaitTime = 2000;
+                const checkInterval = 50;
+                let waited = 0;
+                
+                const waitForSegment = () => {
+                    // Check if segment is loaded by checking segmentCache
+                    // segmentCache is set in loadSegment() when segment data is loaded
+                    const segmentCache = dynamicSplat.segmentCache;
+                    const currentSegmentIndex = dynamicSplat.currentSegmentIndex;
+                    
+                    // Segment is loaded if:
+                    // 1. activeIndices is set (most reliable)
+                    // 2. OR segmentCache has the current segment (segment data loaded)
+                    const hasActiveIndices = dynamicSplat.activeIndices && dynamicSplat.activeIndices.length > 0;
+                    const hasSegmentInCache = segmentCache && currentSegmentIndex >= 0 && segmentCache.has(currentSegmentIndex);
+                    
+                    
+                    if (hasActiveIndices || hasSegmentInCache) {
+                        // Segment loaded, now focus on dynamic splat
+                        console.log('✅ Dynamic splat segment loaded, focusing...');
+                        focusOnDynamicSplat(dynamicSplat);
+                    } else if (waited < maxWaitTime) {
+                        waited += checkInterval;
+                        setTimeout(waitForSegment, checkInterval);
+                    } else {
+                        // Timeout, focus anyway (boundary might still be valid even without segment)
+                        console.warn('⚠️  Timeout waiting for dynamic splat segment, focusing anyway');
+                        console.warn(`   Debug: activeIndices=${!!dynamicSplat.activeIndices}, segmentIndex=${currentSegmentIndex}, cacheSize=${segmentCache?.size || 0}`);
+                        focusOnDynamicSplat(dynamicSplat);
+                    }
+                };
+                
+                // Start waiting after a short delay to let splats initialize
+                setTimeout(waitForSegment, 200);
+            }
             
             const totalTime = performance.now() - importStartTime;
             console.log(`⏱️  Total import time: ${totalTime.toFixed(2)}ms`);

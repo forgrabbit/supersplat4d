@@ -238,29 +238,63 @@ class Camera extends Element {
     // When zooming out (distance increases), FOV increases (wider view)
     // Weight factor: 10% distance change = 2% FOV change (when fovWeight = 0.2)
     private updateDynamicFOV(distance: number) {
-        const controls = this.scene.config.controls;
+        // Find dynamic splat to use its boundary for FOV calculation
+        // This ensures FOV changes are based on the dynamic model, not the entire scene
+        // (which may include large static background splats)
+        let dynamicSplatRadius: number | null = null;
+        for (const element of this.scene.elements) {
+            if (element.type === ElementType.splat) {
+                const splat = element as Splat;
+                if (splat.isDynamic && splat.visible) {
+                    const bound = splat.worldBound;
+                    if (bound) {
+                        dynamicSplatRadius = bound.halfExtents.length();
+                        break;
+                    }
+                }
+            }
+        }
         
-        // Get the initial/center distance (used as reference point)
-        // We use initialZoom as the reference point where FOV = baseFOV
-        const referenceDistance = controls.initialZoom;
-        
-        // Calculate distance change as percentage from reference
-        // If distance < referenceDistance, we're zoomed in (negative change)
-        // If distance > referenceDistance, we're zoomed out (positive change)
-        const distanceChangePercent = (distance - referenceDistance) / referenceDistance;
-        
-        // Apply weight: distance change percentage * weight = FOV change percentage
-        // Example: distanceChangePercent = -0.1 (10% zoom in), fovWeight = 0.2
-        // → fovChangePercent = -0.02 (2% FOV decrease)
-        const fovChangePercent = distanceChangePercent * this.fovWeight;
-        
-        // Calculate dynamic FOV: baseFOV * (1 + fovChangePercent)
-        // When zoomed in (distanceChangePercent < 0), fovChangePercent < 0, FOV decreases
-        // When zoomed out (distanceChangePercent > 0), fovChangePercent > 0, FOV increases
-        const dynamicFOV = this.baseFOV * (1 + fovChangePercent);
-        
-        // Clamp FOV to valid range for safety
-        this.fov = Math.max(this.minFOV, Math.min(this.maxFOV, dynamicFOV));
+        // If we have a dynamic splat, normalize distance relative to dynamic splat radius
+        // Otherwise, use scene radius (original behavior)
+        if (dynamicSplatRadius !== null && dynamicSplatRadius > 0) {
+            // Calculate actual camera distance in world space
+            const actualDistance = distance * this.sceneRadius;
+            
+            // Normalize distance relative to dynamic splat radius instead of scene radius
+            // This makes FOV changes sensitive to dynamic model scale, not entire scene scale
+            const normalizedDistance = actualDistance / dynamicSplatRadius;
+            
+            // Use a reasonable default distance (1.5x dynamic splat radius) as the reference point
+            // This is where FOV = baseFOV when focusing on the dynamic model
+            const referenceDistance = 1.5;
+            
+            // Calculate distance change as percentage from reference
+            // If normalizedDistance < referenceDistance, we're zoomed in (negative change)
+            // If normalizedDistance > referenceDistance, we're zoomed out (positive change)
+            const distanceChangePercent = (normalizedDistance - referenceDistance) / referenceDistance;
+            
+            // Apply weight: distance change percentage * weight = FOV change percentage
+            // Example: distanceChangePercent = -0.1 (10% zoom in), fovWeight = 0.2
+            // → fovChangePercent = -0.02 (2% FOV decrease)
+            const fovChangePercent = distanceChangePercent * this.fovWeight;
+            
+            // Calculate dynamic FOV: baseFOV * (1 + fovChangePercent)
+            // When zoomed in (distanceChangePercent < 0), fovChangePercent < 0, FOV decreases
+            // When zoomed out (distanceChangePercent > 0), fovChangePercent > 0, FOV increases
+            const dynamicFOV = this.baseFOV * (1 + fovChangePercent);
+            
+            // Clamp FOV to valid range for safety
+            this.fov = Math.max(this.minFOV, Math.min(this.maxFOV, dynamicFOV));
+        } else {
+            // Fallback to original behavior when no dynamic splat is found
+            const controls = this.scene.config.controls;
+            const referenceDistance = controls.initialZoom;
+            const distanceChangePercent = (distance - referenceDistance) / referenceDistance;
+            const fovChangePercent = distanceChangePercent * this.fovWeight;
+            const dynamicFOV = this.baseFOV * (1 + fovChangePercent);
+            this.fov = Math.max(this.minFOV, Math.min(this.maxFOV, dynamicFOV));
+        }
     }
 
     setPose(position: Vec3, target: Vec3, dampingFactorFactor: number = 1) {
@@ -314,9 +348,9 @@ class Camera extends Element {
             
             // If enabling (not disabling), focus first, then enable
             if (!wasEnabled) {
-                // Focus on model center with animation (same as frame selection button)
-                // This ensures the model is centered before recording initial position
-                this.focus({ speed: 1 });
+                // Focus on selected splat (same as frame selection button)
+                // This ensures the selected model is centered before recording initial position
+                this.scene.events.fire('camera.focus');
                 
                 // Wait for focus animation to complete before enabling gyroscope
                 // speed: 1 means transitionTime = 1 * dampingFactor (0.2) = 0.2 seconds

@@ -1211,6 +1211,207 @@ def write_sog(output_path: str, data: SplatData, cubemap_path: Optional[str] = N
     print(f"SH degree: {data.sh_degree}")
 
 
+def write_sog4d_multi(output_path: str, dynamic_data: SplatData, static_data_list: List[SplatData],
+                     cfg: Dict[str, float], segment_duration: float, opacity_threshold: float,
+                     trbf_kmeans: bool = True, cubemap_path: Optional[str] = None):
+    """Write compressed .sog4d file with multiple splats (dynamic + static backgrounds).
+    
+    Args:
+        output_path: Output file path
+        dynamic_data: Dynamic splat data (required)
+        static_data_list: List of static splat data (optional, can be empty)
+        cfg: Config with start, duration, fps
+        segment_duration: Duration of each segment in seconds
+        opacity_threshold: Opacity threshold for segment computation
+        trbf_kmeans: If True, use k-means clustering for TRBF
+        cubemap_path: Optional path to cubemap image file
+    """
+    print("\n" + "="*60)
+    print("Writing multi-splat SOG4D file")
+    print("="*60)
+    
+    with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        # Write dynamic splat
+        total_splats = 1 + len(static_data_list)
+        print(f"\n[1/{total_splats}] Processing dynamic splat...")
+        dynamic_indices = sort_morton_order(dynamic_data)
+        dynamic_width, dynamic_height = compute_texture_size(dynamic_data.num)
+        print(f"  Texture size: {dynamic_width} x {dynamic_height}")
+        
+        print("  Encoding attributes...")
+        dynamic_means_l, dynamic_means_u, dynamic_means_meta = encode_means(dynamic_data, dynamic_indices, dynamic_width, dynamic_height)
+        dynamic_quats, dynamic_quats_meta = encode_quats(dynamic_data, dynamic_indices, dynamic_width, dynamic_height)
+        dynamic_scales, dynamic_scales_meta = encode_scales(dynamic_data, dynamic_indices, dynamic_width, dynamic_height)
+        dynamic_sh0, dynamic_sh0_meta = encode_sh0(dynamic_data, dynamic_indices, dynamic_width, dynamic_height)
+        dynamic_motion_l, dynamic_motion_u, dynamic_motion_meta = encode_motion(dynamic_data, dynamic_indices, dynamic_width, dynamic_height)
+        
+        if trbf_kmeans:
+            dynamic_trbf_data, dynamic_trbf_meta = encode_trbf_kmeans(dynamic_data, dynamic_indices, dynamic_width, dynamic_height)
+        else:
+            dynamic_trbf_l, dynamic_trbf_u, dynamic_trbf_meta = encode_trbf(dynamic_data, dynamic_indices, dynamic_width, dynamic_height)
+        
+        dynamic_segments = compute_segments(dynamic_data, cfg, segment_duration, opacity_threshold, dynamic_indices)
+        
+        # Write dynamic files
+        zf.writestr('dynamic/means_l.webp', dynamic_means_l)
+        zf.writestr('dynamic/means_u.webp', dynamic_means_u)
+        zf.writestr('dynamic/quats.webp', dynamic_quats)
+        zf.writestr('dynamic/scales.webp', dynamic_scales)
+        zf.writestr('dynamic/sh0.webp', dynamic_sh0)
+        zf.writestr('dynamic/motion_l.webp', dynamic_motion_l)
+        zf.writestr('dynamic/motion_u.webp', dynamic_motion_u)
+        
+        if trbf_kmeans:
+            zf.writestr('dynamic/trbf.webp', dynamic_trbf_data)
+        else:
+            zf.writestr('dynamic/trbf_l.webp', dynamic_trbf_l)
+            zf.writestr('dynamic/trbf_u.webp', dynamic_trbf_u)
+        
+        for i, (_, indices_bytes) in enumerate(dynamic_segments):
+            zf.writestr(f'dynamic/segments/seg_{i:03d}.act', indices_bytes)
+        
+        # Build dynamic meta
+        dynamic_meta = {
+            'version': 1,
+            'type': 'sog4d',
+            'generator': 'ply_to_sog4d.py',
+            'count': dynamic_data.num,
+            'width': dynamic_width,
+            'height': dynamic_height,
+            'sh_degree': dynamic_data.sh_degree,
+            'start': float(cfg.get('start', 0.0)),
+            'duration': float(cfg.get('duration', 0.0)),
+            'fps': float(cfg.get('fps', 30.0)),
+            'means': dynamic_means_meta,
+            'quats': dynamic_quats_meta,
+            'scales': dynamic_scales_meta,
+            'sh0': dynamic_sh0_meta,
+            'motion': dynamic_motion_meta,
+            'trbf': dynamic_trbf_meta,
+            'segments': [{'t0': s[0]['t0'], 't1': s[0]['t1'], 'url': f'segments/seg_{i:03d}.act', 'count': s[0]['count']}
+                         for i, s in enumerate(dynamic_segments)]
+        }
+        zf.writestr('dynamic/meta.json', json.dumps(dynamic_meta, indent=2))
+        
+        # Write static splats
+        static_metas = {}
+        for idx, static_data in enumerate(static_data_list):
+            static_name = f'static_{idx + 1}'
+            print(f"\n[{idx + 2}/{total_splats}] Processing {static_name}...")
+            
+            static_indices = sort_morton_order(static_data)
+            static_width, static_height = compute_texture_size(static_data.num)
+            print(f"  Texture size: {static_width} x {static_height}")
+            
+            print("  Encoding attributes...")
+            static_means_l, static_means_u, static_means_meta = encode_means(static_data, static_indices, static_width, static_height)
+            static_quats, static_quats_meta = encode_quats(static_data, static_indices, static_width, static_height)
+            static_scales, static_scales_meta = encode_scales(static_data, static_indices, static_width, static_height)
+            static_sh0, static_sh0_meta = encode_sh0(static_data, static_indices, static_width, static_height)
+            static_shN_centroids, static_shN_labels, static_shN_meta = encode_shN(static_data, static_indices, static_width, static_height)
+            
+            # Write static files
+            zf.writestr(f'{static_name}/means_l.webp', static_means_l)
+            zf.writestr(f'{static_name}/means_u.webp', static_means_u)
+            zf.writestr(f'{static_name}/quats.webp', static_quats)
+            zf.writestr(f'{static_name}/scales.webp', static_scales)
+            zf.writestr(f'{static_name}/sh0.webp', static_sh0)
+            
+            if static_shN_centroids is not None and static_shN_labels is not None:
+                zf.writestr(f'{static_name}/shN_centroids.webp', static_shN_centroids)
+                zf.writestr(f'{static_name}/shN_labels.webp', static_shN_labels)
+            
+            # Build static meta
+            static_meta = {
+                'version': 2,
+                'asset': {
+                    'generator': 'ply_to_sog4d.py'
+                },
+                'count': static_data.num,
+                'means': static_means_meta,
+                'quats': static_quats_meta,
+                'scales': static_scales_meta,
+                'sh0': static_sh0_meta,
+            }
+            
+            if static_shN_meta is not None:
+                static_meta['shN'] = static_shN_meta
+            
+            zf.writestr(f'{static_name}/meta.json', json.dumps(static_meta, indent=2))
+            static_metas[static_name] = {
+                'path': static_name + '/',
+                'meta': static_name + '/meta.json'
+            }
+        
+        # Handle cubemap
+        cubemap_info = None
+        if cubemap_path:
+            print(f"\nAdding cubemap: {cubemap_path}")
+            cubemap_filename = os.path.basename(cubemap_path)
+            try:
+                img = Image.open(cubemap_path)
+                if img.mode == 'RGBA':
+                    pass
+                elif img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                buf = io.BytesIO()
+                img.save(buf, format='WEBP', lossless=True)
+                cubemap_data = buf.getvalue()
+                
+                cubemap_webp_filename = os.path.splitext(cubemap_filename)[0] + '.webp'
+                cubemap_info = {
+                    'file': cubemap_webp_filename,
+                    'format': 'horizontal_cross'
+                }
+                original_size = os.path.getsize(cubemap_path)
+                new_size = len(cubemap_data)
+                compression_ratio = (1 - new_size / original_size) * 100
+                print(f"  Converted to WebP: {new_size / 1024:.2f} KB (original: {original_size / 1024:.2f} KB, {compression_ratio:+.1f}%)")
+                
+                zf.writestr(cubemap_webp_filename, cubemap_data)
+            except Exception as e:
+                print(f"  Warning: Failed to convert cubemap to WebP: {e}")
+                print(f"  Using original file format instead")
+                with open(cubemap_path, 'rb') as f:
+                    cubemap_data = f.read()
+                cubemap_info = {
+                    'file': cubemap_filename,
+                    'format': 'horizontal_cross'
+                }
+                zf.writestr(cubemap_filename, cubemap_data)
+        
+        # Write main meta.json
+        main_meta = {
+            'version': 1,
+            'type': 'sog4d_multi',
+            'generator': 'ply_to_sog4d.py',
+            'dynamic': {
+                'path': 'dynamic/',
+                'meta': 'dynamic/meta.json'
+            }
+        }
+        
+        if static_metas:
+            main_meta['static'] = static_metas
+        
+        if cubemap_info:
+            main_meta['cubemap'] = cubemap_info
+        
+        zf.writestr('meta.json', json.dumps(main_meta, indent=2))
+    
+    # Print summary
+    file_size = os.path.getsize(output_path)
+    print(f"\n" + "="*60)
+    print(f"Output: {output_path}")
+    print(f"Size: {file_size / 1024 / 1024:.2f} MB")
+    print(f"Dynamic splats: {dynamic_data.num}")
+    for idx, static_data in enumerate(static_data_list):
+        print(f"Static {idx + 1} splats: {static_data.num}")
+    print(f"Duration: {cfg.get('duration', 0):.2f}s @ {cfg.get('fps', 30)} fps")
+    print("="*60)
+
+
 def write_sog4d(output_path: str, data: SplatData, cfg: Dict[str, float],
                 segment_duration: float, opacity_threshold: float, trbf_kmeans: bool = True,
                 cubemap_path: Optional[str] = None):
@@ -1375,10 +1576,10 @@ def main():
     parser.add_argument('--cfg_args', required=False,
                         help='Path to cfg_args file (for dynamic PLY only: contains start, duration, fps, sh_degree). '
                              'If not provided, will try to read from PLY header comment.')
-    parser.add_argument('--ply', required=True,
-                        help='Path to point_cloud.ply (static or dynamic gaussian)')
+    parser.add_argument('--ply', nargs='+', required=True,
+                        help='Path(s) to point_cloud.ply files. First file must be dynamic, rest are static backgrounds.')
     parser.add_argument('--output', '-o', required=True,
-                        help='Output file path (.sog for static, .sog4d for dynamic)')
+                        help='Output file path (.sog for static only, .sog4d for dynamic or multi-splat)')
     parser.add_argument('--max_splats', type=int, default=0,
                         help='If >0, randomly sample this many splats (for debugging)')
     parser.add_argument('--seed', type=int, default=0,
@@ -1398,11 +1599,90 @@ def main():
 
     args = parser.parse_args()
 
-    # Detect PLY type (static or dynamic) and infer sh_degree
-    print("Detecting PLY type...")
-    is_dynamic, sh_degree = detect_ply_type_and_sh_degree(args.ply)
+    # Handle multiple PLY files (first is dynamic, rest are static)
+    ply_files = args.ply
+    if len(ply_files) == 0:
+        raise ValueError("At least one PLY file is required")
     
-    if is_dynamic:
+    # Detect first PLY type (must be dynamic for multi-splat mode)
+    print(f"Detecting PLY type for: {ply_files[0]}")
+    is_dynamic, sh_degree = detect_ply_type_and_sh_degree(ply_files[0])
+    
+    # If multiple files provided, first must be dynamic
+    if len(ply_files) > 1 and not is_dynamic:
+        raise ValueError(f"First PLY file must be dynamic when multiple files are provided. Got: {ply_files[0]}")
+    
+    # Handle multiple PLY files (multi-splat mode)
+    if len(ply_files) > 1:
+        print(f"Multi-splat mode: {len(ply_files)} files")
+        print(f"  Dynamic: {ply_files[0]}")
+        for i, ply_file in enumerate(ply_files[1:], 1):
+            print(f"  Static {i}: {ply_file}")
+        
+        # Parse cfg_args for dynamic PLY
+        cfg = None
+        print(f"\nChecking PLY header for cfg_args in: {ply_files[0]}")
+        cfg = extract_cfg_args_from_ply(ply_files[0])
+        
+        if cfg is None and args.cfg_args:
+            print(f"Reading cfg_args from file: {args.cfg_args}")
+            with open(args.cfg_args, 'r', encoding='utf-8') as f:
+                cfg_text = f.read()
+            cfg = parse_cfg_args_text(cfg_text)
+        
+        if cfg is None:
+            raise ValueError(
+                "ERROR: Could not find cfg_args for dynamic PLY!\n\n"
+                "Please either:\n"
+                "  1. Add a comment in your PLY header like:\n"
+                "     comment cfg_args: duration=2.0 start=2.0 fps=30.0 sh_degree=0\n"
+                "  OR\n"
+                "  2. Provide --cfg_args argument pointing to a cfg_args file\n"
+            )
+        
+        # Override sh_degree from cfg_args if provided
+        if 'sh_degree' in cfg:
+            sh_degree = int(cfg.get('sh_degree', 0))
+        
+        # Load dynamic PLY
+        max_splats = args.max_splats if args.max_splats > 0 else None
+        dynamic_data = load_ply_dynamic(ply_files[0], sh_degree=sh_degree, max_splats=max_splats, seed=args.seed)
+        
+        # Filter dynamic splats if requested
+        if args.filter_opacity:
+            dynamic_data = filter_low_opacity_splats(dynamic_data, cfg, args.opacity_threshold)
+        
+        # Load static PLYs
+        static_data_list = []
+        for static_ply in ply_files[1:]:
+            print(f"\nDetecting static PLY: {static_ply}")
+            is_static, static_sh_degree = detect_ply_type_and_sh_degree(static_ply)
+            if is_static:
+                raise ValueError(f"Static PLY file has motion fields (should be static): {static_ply}")
+            
+            print(f"  Loading static PLY (sh_degree={static_sh_degree})...")
+            static_data = load_ply_static(static_ply, sh_degree=static_sh_degree, max_splats=max_splats, seed=args.seed)
+            static_data_list.append(static_data)
+        
+        # Ensure output has .sog4d extension
+        output_path = args.output
+        if not output_path.lower().endswith('.sog4d'):
+            output_path += '.sog4d'
+        
+        # Validate cubemap path if provided
+        cubemap_path = args.cubemap
+        if cubemap_path:
+            if not os.path.exists(cubemap_path):
+                raise ValueError(f"Cubemap file not found: {cubemap_path}")
+            print(f"\nIncluding cubemap: {cubemap_path}")
+        
+        # Write multi-splat sog4d
+        trbf_kmeans = not args.no_trbf_kmeans
+        write_sog4d_multi(output_path, dynamic_data, static_data_list, cfg, args.segment_duration,
+                         args.opacity_threshold, trbf_kmeans, cubemap_path)
+    
+    # Single file mode
+    elif is_dynamic:
         print(f"Detected: Dynamic PLY (sh_degree={sh_degree})")
         
         # Parse cfg_args - try PLY header first, then fallback to file
@@ -1410,7 +1690,7 @@ def main():
         
         # Try to extract from PLY header first
         print("Checking PLY header for cfg_args...")
-        cfg = extract_cfg_args_from_ply(args.ply)
+        cfg = extract_cfg_args_from_ply(ply_files[0])
         
         # If not found in header, try cfg_args file
         if cfg is None and args.cfg_args:
@@ -1436,7 +1716,7 @@ def main():
         
         # Load dynamic PLY
         max_splats = args.max_splats if args.max_splats > 0 else None
-        data = load_ply_dynamic(args.ply, sh_degree=sh_degree, max_splats=max_splats, seed=args.seed)
+        data = load_ply_dynamic(ply_files[0], sh_degree=sh_degree, max_splats=max_splats, seed=args.seed)
 
         # Filter out low opacity splats (those invisible across all frames)
         if args.filter_opacity:
@@ -1456,7 +1736,7 @@ def main():
             print(f"Including cubemap: {cubemap_path}")
         
         # Write sog4d
-        trbf_kmeans = not getattr(args, 'no_trbf_kmeans', False)
+        trbf_kmeans = not args.no_trbf_kmeans
         write_sog4d(output_path, data, cfg, args.segment_duration, args.opacity_threshold, trbf_kmeans, cubemap_path)
         
     else:
@@ -1464,7 +1744,7 @@ def main():
         
         # Load static PLY
         max_splats = args.max_splats if args.max_splats > 0 else None
-        data = load_ply_static(args.ply, sh_degree=sh_degree, max_splats=max_splats, seed=args.seed)
+        data = load_ply_static(ply_files[0], sh_degree=sh_degree, max_splats=max_splats, seed=args.seed)
 
         # Ensure output has .sog extension
         output_path = args.output

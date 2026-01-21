@@ -41,9 +41,7 @@ const registerBackgroundEvents = (scene: Scene, events: Events) => {
         
         // Auto-show if requested
         if (autoShow) {
-            backgroundInfo.visible = true;
-            skybox.setVisible(true);
-            // Hide other backgrounds
+            // Hide other backgrounds first
             if (activeSkybox && activeSkybox !== skybox) {
                 activeSkybox.setVisible(false);
                 const prevId = Array.from(skyboxes.entries()).find(([_, s]) => s === activeSkybox)?.[0];
@@ -51,10 +49,16 @@ const registerBackgroundEvents = (scene: Scene, events: Events) => {
                     const prevInfo = backgrounds.get(prevId);
                     if (prevInfo) {
                         prevInfo.visible = false;
+                        events.fire('background.visibility', { id: prevId, visible: false });
                     }
                 }
             }
+            // Show this background
+            backgroundInfo.visible = true;
+            skybox.setVisible(true);
             activeSkybox = skybox;
+            // Fire event to update UI
+            events.fire('background.visibility', { id: backgroundInfo.id, visible: true });
             scene.forceRender = true;
         }
         
@@ -85,7 +89,7 @@ const registerBackgroundEvents = (scene: Scene, events: Events) => {
             }
 
             const file = await handles[0].getFile();
-            await importCubemapFromFile(file, false);
+            await importCubemapFromFile(file, true);
         } catch (error) {
             if (error instanceof Error && error.name !== 'AbortError') {
                 console.error('Failed to import background:', error);

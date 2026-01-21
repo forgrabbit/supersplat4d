@@ -21,7 +21,7 @@ class BackgroundItem extends Container {
     getName: () => string;
     setName: (value: string) => void;
     getVisible: () => boolean;
-    setVisible: (value: boolean) => void;
+    setVisible: (value: boolean, suppressEvent?: boolean) => void;
     destroy: () => void;
     backgroundInfo: BackgroundInfo;
 
@@ -79,16 +79,20 @@ class BackgroundItem extends Container {
             return this.class.contains('visible');
         };
 
-        this.setVisible = (value: boolean) => {
+        this.setVisible = (value: boolean, suppressEvent: boolean = false) => {
             if (value !== this.visible) {
                 visible.hidden = !value;
                 invisible.hidden = value;
                 if (value) {
                     this.class.add('visible');
-                    this.emit('visible', this);
+                    if (!suppressEvent) {
+                        this.emit('visible', this);
+                    }
                 } else {
                     this.class.remove('visible');
-                    this.emit('invisible', this);
+                    if (!suppressEvent) {
+                        this.emit('invisible', this);
+                    }
                 }
             }
         };
@@ -178,6 +182,28 @@ class BackgroundList extends Container {
                 this.items.delete(id);
                 if (this.activeBackgroundId === id) {
                     this.activeBackgroundId = null;
+                }
+            }
+        });
+
+        // Listen for external visibility changes (e.g., from background.autoShow)
+        events.on('background.visibility', ({ id, visible }: { id: string, visible: boolean }) => {
+            const item = this.items.get(id);
+            if (item && item.visible !== visible) {
+                // Update UI state without triggering events (to avoid circular updates)
+                item.setVisible(visible, true);
+                if (visible) {
+                    // Hide other backgrounds
+                    this.items.forEach((otherItem, otherId) => {
+                        if (otherId !== id && otherItem.visible) {
+                            otherItem.setVisible(false, true);
+                        }
+                    });
+                    this.activeBackgroundId = id;
+                } else {
+                    if (this.activeBackgroundId === id) {
+                        this.activeBackgroundId = null;
+                    }
                 }
             }
         });
