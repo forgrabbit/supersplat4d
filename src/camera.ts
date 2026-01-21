@@ -78,7 +78,7 @@ class Camera extends Element {
     baseFOV: number = 65;
     fovWeight: number = 0.2; // Weight factor: 10% distance change = 2% FOV change
     minFOV: number = 55; // Minimum FOV when zoomed in
-    maxFOV: number = 75; // Maximum FOV when zoomed out
+    maxFOV: number = 85; // Maximum FOV when zoomed out
 
     picker: Picker;
 

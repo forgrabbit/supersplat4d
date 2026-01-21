@@ -139,6 +139,141 @@ class SplatData:
 # PLY loading
 # =============================================================================
 
+def detect_ply_type_and_sh_degree(ply_path: str) -> Tuple[bool, int]:
+    """Detect if PLY is static or dynamic, and infer sh_degree from header.
+    
+    Returns:
+        (is_dynamic, sh_degree)
+        - is_dynamic: True if has motion_0/1/2 fields, False otherwise
+        - sh_degree: Inferred from f_rest_* field count (0 if no f_rest fields)
+    """
+    try:
+        with open(ply_path, 'rb') as f:
+            header_lines = []
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+                try:
+                    line_str = line.decode('utf-8').strip()
+                except:
+                    line_str = line.decode('latin-1').strip()
+                
+                header_lines.append(line_str)
+                if line_str == 'end_header':
+                    break
+            
+            # Check for motion fields (dynamic PLY)
+            has_motion = any('motion_0' in line or 'motion_1' in line or 'motion_2' in line 
+                           for line in header_lines)
+            
+            # Count f_rest_* fields to infer sh_degree
+            f_rest_count = 0
+            for line in header_lines:
+                if 'property' in line and 'f_rest_' in line:
+                    f_rest_count += 1
+            
+            # Infer sh_degree: f_rest_count = ((sh_degree + 1)^2 - 1) * 3
+            # Each f_rest_* field is one coefficient, total = rest_coeffs * 3
+            # rest_coeffs = (sh_degree + 1)^2 - 1
+            # So: (sh_degree + 1)^2 = rest_coeffs + 1 = (f_rest_count / 3) + 1
+            #     sh_degree + 1 = sqrt((f_rest_count / 3) + 1)
+            #     sh_degree = sqrt((f_rest_count / 3) + 1) - 1
+            if f_rest_count > 0:
+                if f_rest_count % 3 != 0:
+                    print(f"Warning: f_rest_* count ({f_rest_count}) is not divisible by 3, using sh_degree=0")
+                    sh_degree = 0
+                else:
+                    rest_coeffs = f_rest_count // 3
+                    sh_degree = int(np.sqrt(rest_coeffs + 1) - 1)
+            else:
+                sh_degree = 0
+            
+            return has_motion, sh_degree
+    except Exception as e:
+        print(f"Warning: Could not detect PLY type from header: {e}")
+        # Default to static, sh_degree=0
+        return False, 0
+
+
+def load_ply_static(ply_path: str, sh_degree: int, max_splats: Optional[int] = None, seed: int = 0) -> SplatData:
+    """Load static gaussian PLY file."""
+    print(f"Loading static PLY: {ply_path}")
+    ply = PlyData.read(ply_path)
+    v = ply.elements[0]
+    names = v.data.dtype.names
+
+    # Check required fields for static PLY
+    base_req = [
+        'x', 'y', 'z',
+        'scale_0', 'scale_1', 'scale_2',
+        'rot_0', 'rot_1', 'rot_2', 'rot_3',
+        'f_dc_0', 'f_dc_1', 'f_dc_2',
+        'opacity'
+    ]
+
+    missing = [n for n in base_req if n not in names]
+    if missing:
+        raise ValueError(f"PLY missing properties: {missing}")
+
+    num_full = v.count
+
+    def f32(name: str) -> np.ndarray:
+        return np.asarray(v.data[name], dtype=np.float32)
+
+    fields: Dict[str, np.ndarray] = {}
+
+    # Position
+    fields['x'] = f32('x')
+    fields['y'] = f32('y')
+    fields['z'] = f32('z')
+
+    # Scale (keep as log scale for encoding)
+    fields['scale_0'] = f32('scale_0')
+    fields['scale_1'] = f32('scale_1')
+    fields['scale_2'] = f32('scale_2')
+
+    # Rotation
+    fields['rot_0'] = f32('rot_0')
+    fields['rot_1'] = f32('rot_1')
+    fields['rot_2'] = f32('rot_2')
+    fields['rot_3'] = f32('rot_3')
+
+    # Color (SH DC)
+    fields['f_dc_0'] = f32('f_dc_0')
+    fields['f_dc_1'] = f32('f_dc_1')
+    fields['f_dc_2'] = f32('f_dc_2')
+
+    # Opacity (logit)
+    fields['opacity'] = f32('opacity')
+
+    # SH rest coefficients (if any)
+    if sh_degree > 0:
+        sh_coeffs = (sh_degree + 1) ** 2
+        rest = sh_coeffs - 1
+        rest_names = [f'f_rest_{i}' for i in range(rest * 3)]
+        if all(n in names for n in rest_names):
+            rest_data = np.stack([f32(n) for n in rest_names], axis=1)
+            fields['sh_rest'] = rest_data.reshape(num_full, rest * 3)
+        else:
+            print(f"Warning: SH degree {sh_degree} inferred but f_rest_* not found, using zeros")
+            fields['sh_rest'] = np.zeros((num_full, rest * 3), dtype=np.float32)
+
+    # Subsample if requested
+    if max_splats is not None and 0 < max_splats < num_full:
+        print(f"Subsampling {max_splats} splats from {num_full}")
+        rng = np.random.default_rng(seed)
+        idx = rng.choice(num_full, size=max_splats, replace=False)
+        idx.sort()
+        fields = {k: v[idx] for k, v in fields.items()}
+        num = max_splats
+    else:
+        num = num_full
+
+    print(f"Loaded {num} splats (static, sh_degree={sh_degree})")
+    return SplatData(num=num, sh_degree=sh_degree, fields=fields)
+
+
 def load_ply_dynamic(ply_path: str, sh_degree: int, max_splats: Optional[int] = None, seed: int = 0) -> SplatData:
     """Load dynamic gaussian PLY file."""
     print(f"Loading PLY: {ply_path}")
@@ -697,6 +832,124 @@ def encode_trbf(data: SplatData, indices: np.ndarray, width: int, height: int) -
     return webp_l, webp_u, meta
 
 
+def encode_shN(data: SplatData, indices: np.ndarray, width: int, height: int,
+                n_clusters: int = 256) -> Tuple[Optional[bytes], Optional[bytes], Optional[Dict]]:
+    """Encode SH rest coefficients using two-level k-means clustering (like splat-transform).
+    
+    Algorithm (matching splat-transform):
+    1. First level: Cluster each splat's full SH vector -> palette_size centroids
+    2. Second level: Cluster all centroid coefficients (1D) -> 256 codebook values
+    3. Store: Each splat -> centroid label (16-bit), centroids -> codebook labels (8-bit per coeff)
+    
+    Returns:
+        (centroids_webp, labels_webp, meta) or (None, None, None) if sh_degree == 0
+    """
+    if data.sh_degree == 0 or 'sh_rest' not in data.fields:
+        return None, None, None
+    
+    print("  Encoding SH rest coefficients (two-level k-means clustering)...")
+    
+    sh_rest = data.fields['sh_rest'][indices]  # [N, rest*3]
+    num_splats = len(indices)
+    rest_coeffs = sh_rest.shape[1] // 3  # Number of rest coefficients per channel
+    sh_coeffs = rest_coeffs + 1  # Total SH coefficients per channel (including DC)
+    
+    # First level: k-means clustering on full SH vectors
+    # paletteSize = min(64, 2^floor(log2(N/1024))) * 1024
+    palette_size = min(64, 2 ** int(np.floor(np.log2(max(1, num_splats / 1024))))) * 1024
+    palette_size = min(palette_size, num_splats)  # Can't have more clusters than points
+    
+    print(f"    First-level clustering: {num_splats} splats -> {palette_size} centroids")
+    
+    # Cluster full SH vectors (each splat has rest*3 coefficients)
+    kmeans1 = KMeans(n_clusters=palette_size, random_state=0, n_init='auto')
+    kmeans1.fit(sh_rest)  # [N, rest*3] -> [palette_size, rest*3] centroids
+    
+    # Get centroids and labels
+    centroids = kmeans1.cluster_centers_  # [palette_size, rest*3]
+    labels = kmeans1.predict(sh_rest)  # [N] - label for each splat
+    
+    # Second level: 1D k-means clustering on all centroid coefficients
+    # Flatten all centroids into 1D array (treat each coefficient independently)
+    all_centroid_coeffs = centroids.reshape(-1, 1)  # [palette_size * rest*3, 1]
+    
+    print(f"    Second-level clustering: {len(all_centroid_coeffs)} coefficients -> {n_clusters} codebook")
+    
+    kmeans2 = KMeans(n_clusters=n_clusters, random_state=0, n_init='auto')
+    kmeans2.fit(all_centroid_coeffs)
+    
+    codebook_centroids = kmeans2.cluster_centers_.flatten()  # [n_clusters]
+    codebook_labels = kmeans2.predict(all_centroid_coeffs)  # [palette_size * rest*3]
+    
+    # Sort codebook for better compression
+    codebook_sort_order = np.argsort(codebook_centroids)
+    codebook_sorted = codebook_centroids[codebook_sort_order]
+    
+    codebook_inv_order = np.empty_like(codebook_sort_order)
+    codebook_inv_order[codebook_sort_order] = np.arange(len(codebook_sort_order))
+    
+    # Remap codebook labels
+    codebook_labels = codebook_inv_order[codebook_labels]
+    
+    # Reshape codebook labels back to centroid shape
+    codebook_labels_reshaped = codebook_labels.reshape(palette_size, rest_coeffs * 3)
+    
+    # Write centroids texture
+    # Layout: 64 * rest_coeffs width, ceil(palette_size / 64) height
+    # Each coefficient stored as RGBA: RGB = codebook labels for R/G/B channels, A = 255
+    # Note: Only rest coefficients are stored (DC is in sh0.webp)
+    centroids_width = 64 * rest_coeffs
+    centroids_height = int(np.ceil(palette_size / 64))
+    centroids_buf = np.zeros((centroids_height, centroids_width, 4), dtype=np.uint8)
+    
+    for i in range(palette_size):
+        row = i // 64
+        col_base = (i % 64) * rest_coeffs
+        
+        # Store codebook labels for each rest coefficient
+        # Each coefficient has 3 channels (RGB), stored as RGBA
+        for j in range(rest_coeffs):
+            # Get codebook labels for R, G, B channels of this coefficient
+            r_label = codebook_labels_reshaped[i, j * 3 + 0]
+            g_label = codebook_labels_reshaped[i, j * 3 + 1]
+            b_label = codebook_labels_reshaped[i, j * 3 + 2]
+            
+            # Store in texture
+            centroids_buf[row, col_base + j, 0] = r_label
+            centroids_buf[row, col_base + j, 1] = g_label
+            centroids_buf[row, col_base + j, 2] = b_label
+            centroids_buf[row, col_base + j, 3] = 255
+    
+    centroids_webp = encode_webp_lossless(centroids_buf.flatten(), centroids_width, centroids_height)
+    
+    # Write labels texture (each splat's centroid label, stored as 16-bit)
+    labels_buf = np.zeros((width * height, 4), dtype=np.uint8)
+    
+    for i in range(num_splats):
+        centroid_label = labels[i]  # First-level label (0 to palette_size-1)
+        
+        # Store as 16-bit value (little-endian)
+        labels_buf[i, 0] = centroid_label & 0xFF
+        labels_buf[i, 1] = (centroid_label >> 8) & 0xFF
+        labels_buf[i, 2] = 0
+        labels_buf[i, 3] = 255
+    
+    labels_webp = encode_webp_lossless(labels_buf.flatten(), width, height)
+    
+    # Determine sh_bands from sh_degree
+    # sh_degree 0 -> bands 0, sh_degree 1 -> bands 1, etc.
+    sh_bands = data.sh_degree
+    
+    meta = {
+        'count': palette_size,
+        'bands': sh_bands,
+        'codebook': codebook_sorted.tolist(),
+        'files': ['shN_centroids.webp', 'shN_labels.webp']
+    }
+    
+    return centroids_webp, labels_webp, meta
+
+
 def encode_trbf_kmeans(data: SplatData, indices: np.ndarray, width: int, height: int,
                        n_clusters: int = 256) -> Tuple[bytes, Dict]:
     """Encode TRBF parameters using k-means clustering (higher compression ratio)."""
@@ -849,6 +1102,114 @@ def compute_segments(data: SplatData, cfg: Dict[str, float], segment_duration: f
 # =============================================================================
 # Main export function
 # =============================================================================
+
+def write_sog(output_path: str, data: SplatData, cubemap_path: Optional[str] = None):
+    """Write compressed static .sog file (SOG format version 2).
+    
+    Args:
+        output_path: Output file path
+        data: Splat data (static)
+        cubemap_path: Optional path to cubemap image file (horizontal cross layout).
+                      If provided, will be included in the .sog file and auto-loaded by the viewer.
+    """
+    print("\nSorting by Morton order...")
+    indices = sort_morton_order(data)
+
+    width, height = compute_texture_size(data.num)
+    print(f"Texture size: {width} x {height} ({width * height} pixels for {data.num} splats)")
+
+    print("\nEncoding attributes...")
+
+    # Encode all attributes (same as SOG4D but without motion/trbf)
+    means_l, means_u, means_meta = encode_means(data, indices, width, height)
+    quats, quats_meta = encode_quats(data, indices, width, height)
+    scales, scales_meta = encode_scales(data, indices, width, height)
+    sh0, sh0_meta = encode_sh0(data, indices, width, height)
+    
+    # Encode SH rest coefficients if sh_degree > 0
+    shN_centroids, shN_labels, shN_meta = encode_shN(data, indices, width, height)
+
+    # Build meta.json (SOG format version 2)
+    meta = {
+        'version': 2,
+        'asset': {
+            'generator': 'ply_to_sog4d.py'
+        },
+        'count': data.num,
+        'means': means_meta,
+        'quats': quats_meta,
+        'scales': scales_meta,
+        'sh0': sh0_meta,
+    }
+    
+    # Add shN if present
+    if shN_meta is not None:
+        meta['shN'] = shN_meta
+    
+    # Add cubemap info if provided
+    cubemap_filename = None
+    if cubemap_path:
+        cubemap_filename = os.path.basename(cubemap_path)
+        meta['cubemap'] = {
+            'file': cubemap_filename,
+            'format': 'horizontal_cross'
+        }
+
+    # Write ZIP file
+    print(f"\nWriting {output_path}...")
+
+    with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        # Static gaussian textures
+        zf.writestr('means_l.webp', means_l)
+        zf.writestr('means_u.webp', means_u)
+        zf.writestr('quats.webp', quats)
+        zf.writestr('scales.webp', scales)
+        zf.writestr('sh0.webp', sh0)
+
+        # SH rest coefficients if present
+        if shN_centroids is not None and shN_labels is not None:
+            zf.writestr('shN_centroids.webp', shN_centroids)
+            zf.writestr('shN_labels.webp', shN_labels)
+        
+        # Cubemap (if provided)
+        if cubemap_path:
+            print(f"  Adding cubemap: {cubemap_filename}")
+            try:
+                img = Image.open(cubemap_path)
+                if img.mode == 'RGBA':
+                    pass
+                elif img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                buf = io.BytesIO()
+                img.save(buf, format='WEBP', lossless=True)
+                cubemap_data = buf.getvalue()
+                
+                cubemap_webp_filename = os.path.splitext(cubemap_filename)[0] + '.webp'
+                meta['cubemap']['file'] = cubemap_webp_filename
+                original_size = os.path.getsize(cubemap_path)
+                new_size = len(cubemap_data)
+                compression_ratio = (1 - new_size / original_size) * 100
+                print(f"    Converted to WebP: {new_size / 1024:.2f} KB (original: {original_size / 1024:.2f} KB, {compression_ratio:+.1f}%)")
+                
+                zf.writestr(cubemap_webp_filename, cubemap_data)
+            except Exception as e:
+                print(f"    Warning: Failed to convert cubemap to WebP: {e}")
+                print(f"    Using original file format instead")
+                with open(cubemap_path, 'rb') as f:
+                    cubemap_data = f.read()
+                zf.writestr(cubemap_filename, cubemap_data)
+        
+        # Write meta.json AFTER processing cubemap so filename is correct
+        zf.writestr('meta.json', json.dumps(meta, indent=2))
+
+    # Print size info
+    file_size = os.path.getsize(output_path)
+    print(f"\nOutput: {output_path}")
+    print(f"Size: {file_size / 1024 / 1024:.2f} MB")
+    print(f"Splats: {data.num}")
+    print(f"SH degree: {data.sh_degree}")
+
 
 def write_sog4d(output_path: str, data: SplatData, cfg: Dict[str, float],
                 segment_duration: float, opacity_threshold: float, trbf_kmeans: bool = True,
@@ -1009,15 +1370,15 @@ def write_sog4d(output_path: str, data: SplatData, cfg: Dict[str, float],
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Convert dynamic gaussian PLY to compressed .sog4d format'
+        description='Convert PLY (static or dynamic gaussian) to compressed .sog or .sog4d format'
     )
     parser.add_argument('--cfg_args', required=False,
-                        help='Path to cfg_args file (contains start, duration, fps, sh_degree). '
+                        help='Path to cfg_args file (for dynamic PLY only: contains start, duration, fps, sh_degree). '
                              'If not provided, will try to read from PLY header comment.')
     parser.add_argument('--ply', required=True,
-                        help='Path to point_cloud.ply (dynamic gaussian)')
+                        help='Path to point_cloud.ply (static or dynamic gaussian)')
     parser.add_argument('--output', '-o', required=True,
-                        help='Output .sog4d file path')
+                        help='Output file path (.sog for static, .sog4d for dynamic)')
     parser.add_argument('--max_splats', type=int, default=0,
                         help='If >0, randomly sample this many splats (for debugging)')
     parser.add_argument('--seed', type=int, default=0,
@@ -1037,57 +1398,88 @@ def main():
 
     args = parser.parse_args()
 
-    # Parse cfg_args - try PLY header first, then fallback to file
-    cfg = None
+    # Detect PLY type (static or dynamic) and infer sh_degree
+    print("Detecting PLY type...")
+    is_dynamic, sh_degree = detect_ply_type_and_sh_degree(args.ply)
     
-    # Try to extract from PLY header first
-    print("Checking PLY header for cfg_args...")
-    cfg = extract_cfg_args_from_ply(args.ply)
-    
-    # If not found in header, try cfg_args file
-    if cfg is None and args.cfg_args:
-        print(f"Reading cfg_args from file: {args.cfg_args}")
-        with open(args.cfg_args, 'r', encoding='utf-8') as f:
-            cfg_text = f.read()
-        cfg = parse_cfg_args_text(cfg_text)
-    
-    # If still not found, error
-    if cfg is None:
-        raise ValueError(
-            "ERROR: Could not find cfg_args!\n\n"
-            "Please either:\n"
-            "  1. Add a comment in your PLY header like:\n"
-            "     comment cfg_args: duration=2.0 start=2.0 fps=30.0 sh_degree=0\n"
-            "  OR\n"
-            "  2. Provide --cfg_args argument pointing to a cfg_args file\n"
-        )
+    if is_dynamic:
+        print(f"Detected: Dynamic PLY (sh_degree={sh_degree})")
+        
+        # Parse cfg_args - try PLY header first, then fallback to file
+        cfg = None
+        
+        # Try to extract from PLY header first
+        print("Checking PLY header for cfg_args...")
+        cfg = extract_cfg_args_from_ply(args.ply)
+        
+        # If not found in header, try cfg_args file
+        if cfg is None and args.cfg_args:
+            print(f"Reading cfg_args from file: {args.cfg_args}")
+            with open(args.cfg_args, 'r', encoding='utf-8') as f:
+                cfg_text = f.read()
+            cfg = parse_cfg_args_text(cfg_text)
+        
+        # If still not found, error
+        if cfg is None:
+            raise ValueError(
+                "ERROR: Could not find cfg_args for dynamic PLY!\n\n"
+                "Please either:\n"
+                "  1. Add a comment in your PLY header like:\n"
+                "     comment cfg_args: duration=2.0 start=2.0 fps=30.0 sh_degree=0\n"
+                "  OR\n"
+                "  2. Provide --cfg_args argument pointing to a cfg_args file\n"
+            )
+        
+        # Override sh_degree from cfg_args if provided
+        if 'sh_degree' in cfg:
+            sh_degree = int(cfg.get('sh_degree', 0))
+        
+        # Load dynamic PLY
+        max_splats = args.max_splats if args.max_splats > 0 else None
+        data = load_ply_dynamic(args.ply, sh_degree=sh_degree, max_splats=max_splats, seed=args.seed)
 
-    sh_degree = int(cfg.get('sh_degree', 0))
+        # Filter out low opacity splats (those invisible across all frames)
+        if args.filter_opacity:
+            opacity_threshold = args.opacity_threshold
+            data = filter_low_opacity_splats(data, cfg, opacity_threshold)
 
-    # Load PLY
-    max_splats = args.max_splats if args.max_splats > 0 else None
-    data = load_ply_dynamic(args.ply, sh_degree=sh_degree, max_splats=max_splats, seed=args.seed)
+        # Ensure output has .sog4d extension
+        output_path = args.output
+        if not output_path.lower().endswith('.sog4d'):
+            output_path += '.sog4d'
 
-    # Filter out low opacity splats (those invisible across all frames)
-    if args.filter_opacity:
-        opacity_threshold = args.opacity_threshold
-        data = filter_low_opacity_splats(data, cfg, opacity_threshold)
+        # Validate cubemap path if provided
+        cubemap_path = args.cubemap
+        if cubemap_path:
+            if not os.path.exists(cubemap_path):
+                raise ValueError(f"Cubemap file not found: {cubemap_path}")
+            print(f"Including cubemap: {cubemap_path}")
+        
+        # Write sog4d
+        trbf_kmeans = not getattr(args, 'no_trbf_kmeans', False)
+        write_sog4d(output_path, data, cfg, args.segment_duration, args.opacity_threshold, trbf_kmeans, cubemap_path)
+        
+    else:
+        print(f"Detected: Static PLY (sh_degree={sh_degree})")
+        
+        # Load static PLY
+        max_splats = args.max_splats if args.max_splats > 0 else None
+        data = load_ply_static(args.ply, sh_degree=sh_degree, max_splats=max_splats, seed=args.seed)
 
-    # Ensure output has .sog4d extension
-    output_path = args.output
-    if not output_path.lower().endswith('.sog4d'):
-        output_path += '.sog4d'
+        # Ensure output has .sog extension
+        output_path = args.output
+        if not output_path.lower().endswith('.sog'):
+            output_path += '.sog'
 
-    # Validate cubemap path if provided
-    cubemap_path = args.cubemap
-    if cubemap_path:
-        if not os.path.exists(cubemap_path):
-            raise ValueError(f"Cubemap file not found: {cubemap_path}")
-        print(f"Including cubemap: {cubemap_path}")
-    
-    # Write sog4d
-    trbf_kmeans = not getattr(args, 'no_trbf_kmeans', False)
-    write_sog4d(output_path, data, cfg, args.segment_duration, args.opacity_threshold, trbf_kmeans, cubemap_path)
+        # Validate cubemap path if provided
+        cubemap_path = args.cubemap
+        if cubemap_path:
+            if not os.path.exists(cubemap_path):
+                raise ValueError(f"Cubemap file not found: {cubemap_path}")
+            print(f"Including cubemap: {cubemap_path}")
+        
+        # Write sog
+        write_sog(output_path, data, cubemap_path)
 
     print("\nDone!")
 
@@ -1096,6 +1488,12 @@ if __name__ == '__main__':
     main()
 
 # Example usage:
+# 
+# Static PLY (automatically detected):
+#   python ply_to_sog4d.py --ply "path/to/static.ply" -o "output.sog"
+#   python ply_to_sog4d.py --ply "path/to/static.ply" -o "output.sog" --cubemap "cubemap.png"
+#
+# Dynamic PLY (automatically detected):
 # Method 1: Using cfg_args in PLY header (recommended)
 #   Add this line to your PLY header:
 #     comment cfg_args: duration=2.0 start=2.0 fps=30.0 sh_degree=0

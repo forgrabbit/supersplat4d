@@ -148,7 +148,7 @@ void main(void) {
             color.a *= gaussian;
             
             // Discard splats with low opacity (improves performance and visual quality)
-            if (color.a < 0.05) {
+            if (color.a < 0.005) {
                 gl_Position = discardVec;
                 return;
             }
