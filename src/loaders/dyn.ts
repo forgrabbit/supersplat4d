@@ -1,6 +1,7 @@
 import { Asset, AssetRegistry, GSplatData, GSplatResource } from 'playcanvas';
 
 import { AssetSource, createReadSource } from './asset-source';
+import { getNextAssetId } from './asset-id-counter';
 
 interface DynManifest {
     version: number;
@@ -20,8 +21,6 @@ interface DynManifest {
         count: number;
     }>;
 }
-
-let assetId = 0;
 
 // Parse global.bin binary format
 // Header: MAGIC (4 bytes) + VERSION (4) + num (4) + sh_degree (4) + reserved (4)
@@ -180,7 +179,7 @@ const loadDyn = async (assets: AssetRegistry, assetSource: AssetSource, device: 
 
     // Create asset
     const file = {
-        url: assetSource.contents ? `local-asset-${assetId++}` : manifestUrl,
+        url: assetSource.contents ? `local-asset-${getNextAssetId()}` : manifestUrl,
         filename: assetSource.filename,
         contents: assetSource.contents
     };

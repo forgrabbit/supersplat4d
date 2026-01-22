@@ -1,8 +1,7 @@
 import { Asset, AssetRegistry, GSplatData, GSplatResource } from 'playcanvas';
 
 import { AssetSource } from './asset-source';
-
-let assetId = 0;
+import { getNextAssetId } from './asset-id-counter';
 
 // use the engine to load a gsplat asset (ply, compressed.ply, sog, sog-bundle)
 const loadGsplat = (assets: AssetRegistry, assetSource: AssetSource) => {
@@ -12,7 +11,7 @@ const loadGsplat = (assets: AssetRegistry, assetSource: AssetSource) => {
 
     const file = {
         // we must construct a unique url if contents is provided
-        url: contents ? `local-asset-${assetId++}` : assetSource.url ?? assetSource.filename,
+        url: contents ? `local-asset-${getNextAssetId()}` : assetSource.url ?? assetSource.filename,
         filename: assetSource.filename,
         contents
     };

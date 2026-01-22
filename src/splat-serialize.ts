@@ -478,9 +478,15 @@ const serializePly = async (splats: Splat[], serializeSettings: SerializeSetting
     // this data is filtered out, as it holds internal editor state
     const internalProps = keepStateData ? ['transform'] : ['state', 'transform'];
 
+    // Check if any splat is dynamic - if all are static, filter out dynamic properties
+    const hasDynamicSplat = splats.some(s => s.isDynamic);
+    const dynamicProps = ['motion_0', 'motion_1', 'motion_2', 'trbf_center', 'trbf_scale'];
+    
     const props = getCommonProps(splats)
     // filter out internal props
     .filter(p => !internalProps.includes(p.name))
+    // filter out dynamic properties if all splats are static
+    .filter(p => hasDynamicSplat || !dynamicProps.includes(p.name))
     // filter out max SH bands
     .filter((p) => {
         if (!p.name.startsWith('f_rest_')) {

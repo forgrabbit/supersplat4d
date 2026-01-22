@@ -210,11 +210,50 @@ const serializeDynamicPly = async (
         throw new Error('No visible splats in the selected time range');
     }
     
-    // Get all property names
+    // Define property order to match standard PLY format
+    // Order: x y z trbf_center trbf_scale nx ny nz motion_0 motion_1 motion_2 f_dc_0 f_dc_1 f_dc_2 opacity scale_0 scale_1 scale_2 rot_0 rot_1 rot_2 rot_3
+    const propertyOrder = [
+        'x', 'y', 'z',
+        'trbf_center', 'trbf_scale',
+        'nx', 'ny', 'nz',
+        'motion_0', 'motion_1', 'motion_2',
+        'f_dc_0', 'f_dc_1', 'f_dc_2',
+        'opacity',
+        'scale_0', 'scale_1', 'scale_2',
+        'rot_0', 'rot_1', 'rot_2', 'rot_3'
+    ];
+    
+    // Get all properties from splatData
     const vertexElement = splatData.getElement('vertex');
-    const props = vertexElement.properties.filter((p: any) => 
+    const allProps = vertexElement.properties.filter((p: any) => 
         p.name !== 'state' && p.name !== 'transform'
     );
+    
+    // DEBUG: Log all available properties before export
+    console.log('🔍 EXPORT DEBUG: All properties in splatData:', allProps.map((p: any) => p.name).join(', '));
+    console.log('🔍 EXPORT DEBUG: Total properties:', allProps.length);
+    
+    // Create property map for quick lookup
+    const propMap = new Map<string, any>();
+    for (const prop of allProps) {
+        propMap.set(prop.name, prop);
+    }
+    
+    // Build props array in the desired order, only including properties that exist
+    const props: any[] = [];
+    for (const propName of propertyOrder) {
+        const prop = propMap.get(propName);
+        if (prop) {
+            props.push(prop);
+        }
+    }
+    
+    // Add any remaining properties that weren't in the standard order (e.g., f_rest_*)
+    for (const prop of allProps) {
+        if (!propertyOrder.includes(prop.name)) {
+            props.push(prop);
+        }
+    }
     
     // Build header with cfg_args
     const cfgArgs = `comment cfg_args: start=${exportStart} duration=${exportDuration} fps=${manifest.fps} sh_degree=${manifest.sh_degree || 0}`;

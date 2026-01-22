@@ -18,6 +18,7 @@ declare const JSZip: any;
 
 import { AssetSource, createReadSource } from './asset-source';
 import type { DynManifest } from './dyn';
+import { getNextAssetId } from './asset-id-counter';
 
 const defaultOrientation = new Vec3(0, 0, 180);
 
@@ -180,8 +181,6 @@ const sigmoidInv = (y: number): number => {
 // =============================================================================
 // Main decoder
 // =============================================================================
-
-let assetId = 0;
 
 /**
  * Parse SOG4D ZIP file and create GSplatData
@@ -571,7 +570,7 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
     // Create asset
     const filename = assetSource.filename || assetSource.url || 'dynamic-splat.sog4d';
     const file = {
-        url: assetSource.contents ? `local-asset-${assetId++}` : (assetSource.url ?? filename),
+        url: assetSource.contents ? `local-asset-${getNextAssetId()}` : (assetSource.url ?? filename),
         filename: filename,
         contents: assetSource.contents
     };

@@ -12,6 +12,7 @@ interface DynamicExportOptions {
     duration: number;
     format: 'ply' | 'sog4d';
     filename: string;
+    splatIdx: number | 'all';
 }
 
 interface DynamicExportParams {
@@ -19,6 +20,7 @@ interface DynamicExportParams {
     originalDuration: number;
     fps: number;
     filename: string;
+    splatNames: string[];
 }
 
 class DynamicExportDialog extends Container {
@@ -106,6 +108,20 @@ class DynamicExportDialog extends Container {
         durationRow.append(durationLabel);
         durationRow.append(durationInput);
 
+        // splat selection
+        const splatsLabel = new Label({
+            class: 'label',
+            text: 'Splat:'
+        });
+        const splatsSelect = new SelectInput({
+            class: 'select',
+            defaultValue: '0',
+            options: []
+        });
+        const splatsRow = new Container({ class: 'row' });
+        splatsRow.append(splatsLabel);
+        splatsRow.append(splatsSelect);
+
         // info about time range
         const infoText = new Label({
             class: 'label',
@@ -120,6 +136,7 @@ class DynamicExportDialog extends Container {
         // content
         const content = new Container({ id: 'content' });
         content.append(filenameRow);
+        content.append(splatsRow);
         content.append(formatRow);
         content.append(warningRow);
         content.append(startRow);
@@ -193,7 +210,8 @@ class DynamicExportDialog extends Container {
                 start: startInput.value,
                 duration: durationInput.value,
                 format: formatSelect.value as 'ply' | 'sog4d',
-                filename: currentParams.filename
+                filename: currentParams.filename,
+                splatIdx: splatsSelect.value === 'all' ? 'all' : parseInt(splatsSelect.value, 10)
             };
             this.hidden = true;
             resolvePromise(options);
@@ -222,7 +240,8 @@ class DynamicExportDialog extends Container {
                     start: startInput.value,
                     duration: durationInput.value,
                     format: formatSelect.value as 'ply' | 'sog4d',
-                    filename: currentParams.filename
+                    filename: currentParams.filename,
+                    splatIdx: splatsSelect.value === 'all' ? 'all' : parseInt(splatsSelect.value, 10)
                 };
                 this.hidden = true;
                 resolvePromise(options);
@@ -233,6 +252,17 @@ class DynamicExportDialog extends Container {
             return new Promise<DynamicExportOptions | null>((resolve) => {
                 resolvePromise = resolve;
                 currentParams = params;
+                
+                // Update splat list
+                splatsSelect.options = params.splatNames.length > 1
+                    ? [
+                        { v: 'all', t: 'All' },
+                        ...params.splatNames.map((s, i) => ({ v: i.toFixed(0), t: s }))
+                    ]
+                    : params.splatNames.map((s, i) => ({ v: i.toFixed(0), t: s }));
+                splatsSelect.value = params.splatNames.length > 1 ? 'all' : '0';
+                splatsSelect.enabled = params.splatNames.length > 1;
+                splatsRow.hidden = params.splatNames.length === 0;
                 
                 // Set defaults from original params
                 filenameValue.text = params.filename;

@@ -628,8 +628,15 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
         const hasFilePicker = !!window.showSaveFilePicker;
 
+        // Filter splats based on export type
+        // For static PLY export, only show static splats
+        // For other exports, show all splats
+        const filteredSplats = exportType === 'ply' 
+            ? splats.filter(s => !s.isDynamic)
+            : splats;
+
         // show viewer export options
-        const options = await events.invoke('show.exportPopup', exportType, splats.map(s => s.name), !hasFilePicker) as SceneExportOptions;
+        const options = await events.invoke('show.exportPopup', exportType, filteredSplats.map(s => s.name), !hasFilePicker) as SceneExportOptions;
 
         // return if user cancelled
         if (!options) {
@@ -672,7 +679,14 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             const writer = stream ? new FileStreamWriter(stream) : new DownloadWriter(filename);
 
             try {
-                const splats = splatIdx === 'all' ? getSplats() : [getSplats()[splatIdx]];
+                // For static PLY export, filter out dynamic splats
+                // For other exports, use all splats
+                const allSplats = getSplats();
+                const filteredSplats = (fileType === 'ply' || fileType === 'compressedPly')
+                    ? allSplats.filter(s => !s.isDynamic)
+                    : allSplats;
+                
+                const splats = splatIdx === 'all' ? filteredSplats : [filteredSplats[splatIdx]];
 
                 switch (fileType) {
                     case 'ply':
@@ -710,9 +724,9 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
     events.function('scene.exportDynamic', async () => {
         const splats = getSplats();
         
-        // Find the first dynamic splat
-        const dynamicSplat = splats.find(s => s.isDynamic && s.dynManifest);
-        if (!dynamicSplat || !dynamicSplat.dynManifest) {
+        // Find all dynamic splats
+        const dynamicSplats = splats.filter(s => s.isDynamic && s.dynManifest);
+        if (dynamicSplats.length === 0) {
             await events.invoke('showPopup', {
                 type: 'error',
                 header: 'Export Error',
@@ -721,12 +735,15 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             return;
         }
 
-        const manifest = dynamicSplat.dynManifest;
+        // Use the first dynamic splat for default params (or selected one if only one)
+        const defaultSplat = dynamicSplats[0];
+        const manifest = defaultSplat.dynManifest!;
         const params: DynamicExportParams = {
             originalStart: manifest.start,
             originalDuration: manifest.duration,
             fps: manifest.fps,
-            filename: dynamicSplat.name || 'dynamic_export'
+            filename: defaultSplat.name || 'dynamic_export',
+            splatNames: dynamicSplats.map(s => s.name)
         };
 
         // Show export dialog
@@ -735,32 +752,45 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             return;  // User cancelled
         }
 
+        // Get the selected splat(s)
+        const selectedSplats = options.splatIdx === 'all' 
+            ? dynamicSplats 
+            : [dynamicSplats[options.splatIdx]];
+
         const hasFilePicker = !!window.showSaveFilePicker;
         const extension = options.format === 'sog4d' ? '.sog4d' : '.ply';
         const filename = options.filename.replace(/\.(ply|sog4d)$/i, '') + extension;
 
         const fileType = options.format === 'sog4d' ? 'sog4d' : 'ply';
 
-        if (hasFilePicker) {
-            try {
-                const fileHandle = await window.showSaveFilePicker({
-                    id: 'SuperSplatDynamicExport',
-                    types: [filePickerTypes[fileType]],
-                    suggestedName: filename
-                });
-                await writeDynamicExport(events, dynamicSplat, options, await fileHandle.createWritable());
-            } catch (error: any) {
-                if (error.name !== 'AbortError') {
-                    console.error(error);
-                    await events.invoke('showPopup', {
-                        type: 'error',
-                        header: 'Export Error',
-                        message: error.message || 'Failed to export'
+        // Export each selected splat
+        for (const dynamicSplat of selectedSplats) {
+            const exportFilename = selectedSplats.length > 1 
+                ? filename.replace(/\.(ply|sog4d)$/i, `_${dynamicSplat.name}.$1`)
+                : filename;
+
+            if (hasFilePicker) {
+                try {
+                    const fileHandle = await window.showSaveFilePicker({
+                        id: 'SuperSplatDynamicExport',
+                        types: [filePickerTypes[fileType]],
+                        suggestedName: exportFilename
                     });
+                    await writeDynamicExport(events, dynamicSplat, { ...options, filename: exportFilename }, await fileHandle.createWritable());
+                } catch (error: any) {
+                    if (error.name !== 'AbortError') {
+                        console.error(error);
+                        await events.invoke('showPopup', {
+                            type: 'error',
+                            header: 'Export Error',
+                            message: error.message || 'Failed to export'
+                        });
+                    }
+                    break; // Stop exporting remaining splats if user cancels or error occurs
                 }
+            } else {
+                await writeDynamicExport(events, dynamicSplat, { ...options, filename: exportFilename });
             }
-        } else {
-            await writeDynamicExport(events, dynamicSplat, options);
         }
     });
 };
@@ -775,15 +805,42 @@ const writeDynamicExport = async (
     events.fire('startSpinner');
 
     try {
+        // Validate time range against splat's manifest
+        if (!splat.dynManifest) {
+            throw new Error('Splat does not have dynamic manifest');
+        }
+
+        const manifest = splat.dynManifest;
+        const manifestStart = manifest.start;
+        const manifestEnd = manifest.start + manifest.duration;
+        const exportStart = options.start;
+        const exportEnd = options.start + options.duration;
+
+        // Clamp time range to manifest range
+        const clampedStart = Math.max(exportStart, manifestStart);
+        const clampedEnd = Math.min(exportEnd, manifestEnd);
+        const clampedDuration = Math.max(0.1, clampedEnd - clampedStart);
+
+        if (clampedDuration < 0.1) {
+            throw new Error(`Time range [${exportStart.toFixed(2)}, ${exportEnd.toFixed(2)}] is outside splat's valid range [${manifestStart.toFixed(2)}, ${manifestEnd.toFixed(2)}]`);
+        }
+
+        // Use clamped values
+        const clampedOptions = {
+            ...options,
+            start: clampedStart,
+            duration: clampedDuration
+        };
+
         // Show progress for SOG4D
-        if (options.format === 'sog4d') {
+        if (clampedOptions.format === 'sog4d') {
             events.fire('progressStart', 'Exporting SOG4D (this may take a few minutes)...');
         }
 
         await new Promise<void>((resolve) => setTimeout(resolve));
 
-        const extension = options.format === 'sog4d' ? '.sog4d' : '.ply';
-        const filename = options.filename.replace(/\.(ply|sog4d)$/i, '') + extension;
+        const extension = clampedOptions.format === 'sog4d' ? '.sog4d' : '.ply';
+        const filename = clampedOptions.filename.replace(/\.(ply|sog4d)$/i, '') + extension;
         const writer = stream ? new FileStreamWriter(stream) : new DownloadWriter(filename);
 
         try {
@@ -793,23 +850,23 @@ const writeDynamicExport = async (
                 splatData: splat.splatData
             };
 
-            if (options.format === 'sog4d') {
-                await serializeSog4d(info, options, writer, (p, stage) => {
+            if (clampedOptions.format === 'sog4d') {
+                await serializeSog4d(info, clampedOptions, writer, (p, stage) => {
                     events.fire('progressUpdate', { text: stage, progress: p });
                 });
             } else {
-                await serializeDynamicPly(info, options, writer);
+                await serializeDynamicPly(info, clampedOptions, writer);
             }
         } finally {
             await writer.close();
         }
 
-        if (options.format === 'sog4d') {
+        if (clampedOptions.format === 'sog4d') {
             events.fire('progressEnd');
         }
 
     } catch (error: any) {
-        if (options.format === 'sog4d') {
+        if (options?.format === 'sog4d') {
             events.fire('progressEnd');
         }
         await events.invoke('showPopup', {

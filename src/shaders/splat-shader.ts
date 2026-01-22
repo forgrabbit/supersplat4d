@@ -85,9 +85,9 @@ void main(void) {
             float dt = (uCurrentTime - trbfCenter) / max(trbfScale, 1e-6);
             float gaussian = exp(-dt * dt);
             
-            // Conservative threshold: if gaussian weight is very low, the splat is likely invisible
-            // This catches most invisible splats while being safe (may miss some edge cases)
-            if (gaussian < 0.1) {
+            // Use selection threshold (0.05) for picker - conservative since we only check gaussian weight
+            // Full opacity check (baseOp * gaussian > 0.05) is done in CPU-side selection logic
+            if (gaussian < 0.05) {
                 gl_Position = discardVec;
                 return;
             }

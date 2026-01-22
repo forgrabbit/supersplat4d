@@ -53,7 +53,12 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
             return false; // Invalid index
         }
 
-        const currentTime = splat.currentTime;
+        // Get current time from timeline (same logic as onUpdate)
+        const currentFrame = (events.invoke('timeline.frame') ?? 0) as number;
+        const totalFrames = Math.ceil(splat.dynManifest.duration * splat.dynManifest.fps);
+        const frame = currentFrame % totalFrames;
+        const currentTime = splat.dynManifest.start + (frame / splat.dynManifest.fps);
+
         const tc = trbfCenter[index];
         const ts = Math.max(trbfScale[index], 1e-6); // Already exp-converted
         const opLogit = opacity[index];
@@ -66,7 +71,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         const trbfGauss = Math.exp(-dt * dt);
         const dynOpacity = baseOp * trbfGauss;
 
-        // Use same threshold as rendering (0.05)
+        // Use selection threshold (0.05) - stricter than rendering (0.005) to avoid selecting adjacent frames
         return dynOpacity > 0.05;
     };
 
@@ -466,10 +471,6 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
             const splatData = splat.splatData;
 
             if (mode === 'centers') {
-                const x = splatData.getProp('x');
-                const y = splatData.getProp('y');
-                const z = splatData.getProp('z');
-
                 const splatSize = events.invoke('camera.splatSize');
                 const camera = scene.camera.entity.camera;
                 const sx = point.x * width;
@@ -478,12 +479,57 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 // calculate final matrix
                 mat.mul2(camera.camera._viewProjMat, splat.worldTransform);
 
+                // Get current time for dynamic gaussians
+                let currentTime: number | null = null;
+                if (splat.isDynamic && splat.dynManifest) {
+                    const currentFrame = (events.invoke('timeline.frame') ?? 0) as number;
+                    const totalFrames = Math.ceil(splat.dynManifest.duration * splat.dynManifest.fps);
+                    const frame = currentFrame % totalFrames;
+                    currentTime = splat.dynManifest.start + (frame / splat.dynManifest.fps);
+                }
+
+                // For dynamic gaussians, use updated centers from sorter (current frame positions)
+                // For static gaussians, use original positions
+                const sorter = splat.entity.gsplat.instance.sorter;
+                const centers = sorter.centers;
+                const x = splatData.getProp('x') as Float32Array;
+                const y = splatData.getProp('y') as Float32Array;
+                const z = splatData.getProp('z') as Float32Array;
+                
+                // Get motion data for dynamic gaussians (if needed)
+                let motion0: Float32Array | null = null;
+                let motion1: Float32Array | null = null;
+                let motion2: Float32Array | null = null;
+                let trbfCenter: Float32Array | null = null;
+                if (splat.isDynamic && currentTime !== null) {
+                    motion0 = splatData.getProp('motion_0') as Float32Array;
+                    motion1 = splatData.getProp('motion_1') as Float32Array;
+                    motion2 = splatData.getProp('motion_2') as Float32Array;
+                    trbfCenter = splatData.getProp('trbf_center') as Float32Array;
+                }
+
                 const filter = (i: number) => {
-                    vec4.set(x[i], y[i], z[i], 1.0);
+                    let px, py, pz: number;
+                    
+                    // Use current frame position for dynamic gaussians
+                    if (splat.isDynamic && currentTime !== null && motion0 && motion1 && motion2 && trbfCenter) {
+                        // Calculate current frame position: p(t) = p0 + motion * (t - trbf_center)
+                        const dt = currentTime - trbfCenter[i];
+                        px = x[i] + motion0[i] * dt;
+                        py = y[i] + motion1[i] * dt;
+                        pz = z[i] + motion2[i] * dt;
+                    } else {
+                        // Use original position for static gaussians
+                        px = x[i];
+                        py = y[i];
+                        pz = z[i];
+                    }
+                    
+                    vec4.set(px, py, pz, 1.0);
                     mat.transformVec4(vec4, vec4);
-                    const px = (vec4.x / vec4.w * 0.5 + 0.5) * width;
-                    const py = (-vec4.y / vec4.w * 0.5 + 0.5) * height;
-                    const inRect = Math.abs(px - sx) < splatSize && Math.abs(py - sy) < splatSize;
+                    const screenX = (vec4.x / vec4.w * 0.5 + 0.5) * width;
+                    const screenY = (-vec4.y / vec4.w * 0.5 + 0.5) * height;
+                    const inRect = Math.abs(screenX - sx) < splatSize && Math.abs(screenY - sy) < splatSize;
                     if (!inRect) {
                         return false;
                     }
