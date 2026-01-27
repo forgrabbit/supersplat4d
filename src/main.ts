@@ -32,6 +32,7 @@ import { ToolManager } from './tools/tool-manager';
 import { registerTransformHandlerEvents } from './transform-handler';
 import { EditorUI } from './ui/editor';
 import { localizeInit } from './ui/localization';
+import { performanceProfiler } from './performance-profiler';
 
 declare global {
     interface LaunchParams {
@@ -265,6 +266,19 @@ const main = async () => {
     registerIframeApi(events);
     initShortcuts(events);
     initFileHandler(scene, events, editorUI.appContainer.dom);
+    
+    // Performance profiler integration
+    events.on('performance.start', () => {
+        performanceProfiler.enable();
+        console.log('📊 Performance profiling started. Click the button again to stop and view results.');
+    });
+    
+    events.on('performance.stop', () => {
+        performanceProfiler.disable();
+        performanceProfiler.printSummary();
+        performanceProfiler.downloadJSON();
+        console.log('📊 Performance profiling stopped. Results downloaded.');
+    });
 
     // load async models
     scene.start();

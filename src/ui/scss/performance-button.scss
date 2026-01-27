@@ -1,0 +1,72 @@
+@use 'colors.scss' as *;
+
+.performance-button {
+    position: fixed;
+    z-index: 10000;
+    pointer-events: all;
+    
+    // Default position will be set by JavaScript
+    // Positioned in bottom-right by default
+}
+
+.performance-button-icon {
+    width: 40px;
+    height: 40px;
+    border: none;
+    border-radius: 8px;
+    background-color: rgba(0, 0, 0, 0.6);
+    cursor: move;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    padding: 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+
+    svg {
+        width: 24px;
+        height: 24px;
+        color: $text-secondary;
+        transition: color 0.2s ease;
+        pointer-events: none;
+    }
+
+    &:hover {
+        background-color: rgba(0, 0, 0, 0.8);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        transform: scale(1.05);
+        
+        svg {
+            color: $text-primary;
+        }
+    }
+
+    &.active {
+        background-color: $clr-hilight;
+        box-shadow: 0 4px 12px rgba(147, 126, 226, 0.4);
+        
+        svg {
+            color: white;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+    }
+
+    &.dragging {
+        cursor: grabbing;
+        transform: scale(1.1);
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+        transition: none;
+    }
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.6;
+    }
+}

@@ -28,6 +28,7 @@ import { State } from './splat-state';
 import { Transform } from './transform';
 import { TransformPalette } from './transform-palette';
 import type { DynManifest } from './loaders/dyn';
+import { performanceProfiler } from './performance-profiler';
 
 const vec = new Vec3();
 const veca = new Vec3();
@@ -302,8 +303,15 @@ class Splat extends Element {
         // when sort changes, re-render the scene and mark sort complete
         instance.sorter.on('updated', () => {
             this.changedCounter++;
+            
+            // Performance measurement: record sorting completion time
             if (this.pendingSort) {
                 this.pendingSort = false;
+                
+                // End sorting timer if we started it
+                if (performanceProfiler.isEnabled()) {
+                    performanceProfiler.endSorting();
+                }
                 
                 // Now that sorting is complete, update the shader time
                 // This ensures rendering uses the same time as sorting
@@ -357,6 +365,8 @@ class Splat extends Element {
             return;
         }
         
+        performanceProfiler.startPositionCalculation();
+        
         const x0 = this._dyn_x0;
         const y0 = this._dyn_y0;
         const z0 = this._dyn_z0;
@@ -407,6 +417,8 @@ class Splat extends Element {
             centers[o + 1] = y0[idx] + m1[idx] * dt;
             centers[o + 2] = z0[idx] + m2[idx] * dt;
         }
+        
+        performanceProfiler.endPositionCalculation();
     }
 
     // Update motion and trbf textures from GSplatData
@@ -826,7 +838,19 @@ class Splat extends Element {
                 this.lastSortedFrame = frame;
                 this.lastSortedTime = t_abs;
                 
+                // Performance measurement: start sorting timer BEFORE triggering sort
+                // We start timing here because we're about to trigger the sort operation
+                // The actual sorting may happen asynchronously, but we measure from when we request it
+                if (performanceProfiler.isEnabled()) {
+                    performanceProfiler.startSorting();
+                }
+                
+                // Trigger sort
+                // Note: According to render.ts comments, sorting happens automatically during rendering
+                // We set mapping here, and sorting will happen during render phase
                 sorter.setMapping(indices);
+                // Force sort call - but actual sorting may happen during rendering
+                this.entity.gsplat.instance.sort(this.scene.camera.entity);
                 
                 // 预加载下一个 segment
                 this.preloadNextSegment(segmentIdx);
