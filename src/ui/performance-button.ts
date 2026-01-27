@@ -1,5 +1,6 @@
 import { Container } from '@playcanvas/pcui';
 import { Events } from '../events';
+import { isMobileDevice } from '../utils/device-detection';
 import performanceIconSvg from './svg/performance-icon.svg';
 
 const createSvg = (svgString: string) => {
@@ -40,8 +41,17 @@ class PerformanceButton extends Container {
 
         this.dom.appendChild(this.button);
 
-        // Load saved position or use default (bottom-right)
+        // Ensure button is visible
+        this.dom.style.display = 'block';
+        this.dom.style.visibility = 'visible';
+        this.dom.style.opacity = '1';
+
+        // Load saved position or use default (bottom-right for desktop, bottom-left for mobile)
         this.loadPosition();
+        
+        // Debug: log button creation
+        const isMobile = isMobileDevice();
+        console.log(`[PerformanceButton] Created, isMobile=${isMobile}, position: left=${this.dom.style.left}, top=${this.dom.style.top}`);
 
         // Setup drag functionality
         this.setupDragHandlers();
@@ -101,11 +111,19 @@ class PerformanceButton extends Container {
     }
 
     private setDefaultPosition() {
-        // Default: bottom-right corner with some padding
         const padding = 20;
         const buttonSize = 60; // 40px button + 20px padding
-        this.dom.style.left = `${window.innerWidth - buttonSize - padding}px`;
-        this.dom.style.top = `${window.innerHeight - buttonSize - padding}px`;
+        const isMobile = isMobileDevice();
+        
+        if (isMobile) {
+            // Mobile: bottom-left corner (avoid conflict with menu button in top-left)
+            this.dom.style.left = `${padding}px`;
+            this.dom.style.top = `${window.innerHeight - buttonSize - padding}px`;
+        } else {
+            // Desktop: bottom-right corner
+            this.dom.style.left = `${window.innerWidth - buttonSize - padding}px`;
+            this.dom.style.top = `${window.innerHeight - buttonSize - padding}px`;
+        }
     }
 
     private savePosition() {
