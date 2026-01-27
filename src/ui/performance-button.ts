@@ -77,10 +77,21 @@ class PerformanceButton extends Container {
         const saved = localStorage.getItem(STORAGE_KEY);
         if (saved) {
             try {
-                const { x, y } = JSON.parse(saved);
-                this.dom.style.left = `${x}px`;
-                this.dom.style.top = `${y}px`;
-                this.constrainPosition();
+                const { x, y, screenWidth, screenHeight } = JSON.parse(saved);
+                // Check if screen size changed significantly (likely different device)
+                const currentWidth = window.innerWidth;
+                const currentHeight = window.innerHeight;
+                const widthDiff = Math.abs(currentWidth - (screenWidth || currentWidth)) / (screenWidth || currentWidth);
+                const heightDiff = Math.abs(currentHeight - (screenHeight || currentHeight)) / (screenHeight || currentHeight);
+                
+                // If screen size changed by more than 30%, reset position (likely different device)
+                if (widthDiff > 0.3 || heightDiff > 0.3) {
+                    this.setDefaultPosition();
+                } else {
+                    this.dom.style.left = `${x}px`;
+                    this.dom.style.top = `${y}px`;
+                    this.constrainPosition();
+                }
             } catch (e) {
                 this.setDefaultPosition();
             }
@@ -92,15 +103,18 @@ class PerformanceButton extends Container {
     private setDefaultPosition() {
         // Default: bottom-right corner with some padding
         const padding = 20;
-        this.dom.style.left = `${window.innerWidth - 60 - padding}px`;
-        this.dom.style.top = `${window.innerHeight - 60 - padding}px`;
+        const buttonSize = 60; // 40px button + 20px padding
+        this.dom.style.left = `${window.innerWidth - buttonSize - padding}px`;
+        this.dom.style.top = `${window.innerHeight - buttonSize - padding}px`;
     }
 
     private savePosition() {
         const rect = this.dom.getBoundingClientRect();
         localStorage.setItem(STORAGE_KEY, JSON.stringify({
             x: rect.left,
-            y: rect.top
+            y: rect.top,
+            screenWidth: window.innerWidth,
+            screenHeight: window.innerHeight
         }));
     }
 
