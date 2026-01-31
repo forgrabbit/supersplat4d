@@ -24,8 +24,7 @@ class PerformanceProfiler {
     // Timing markers
     private positionCalcStart: number = 0;
     private positionCalcEnd: number = 0;
-    private sortStart: number = 0;
-    private sortEnd: number = 0;
+    private sortStartQueue: number[] = [];  // Queue to track multiple concurrent sorting operations (FIFO)
     private preRenderStart: number = 0;
     private gpuRenderStart: number = 0;
     private gpuRenderEnd: number = 0;
@@ -44,6 +43,7 @@ class PerformanceProfiler {
         this.currentFrame = null;
         this.pendingAsyncOps = 0;
         this.frameReadyToSave = false;
+        this.sortStartQueue = [];  // Reset sort queue
         console.log('📊 Performance profiler enabled');
     }
 
@@ -114,28 +114,36 @@ class PerformanceProfiler {
 
     startSorting() {
         if (!this.enabled) return;
-        this.sortStart = performance.now();
+        const startTime = performance.now();
+        this.sortStartQueue.push(startTime);  // Enqueue start time (FIFO)
         this.pendingAsyncOps++;  // Increment async operation counter
+        console.log(`📊 [Profiler] startSorting() called, queue length: ${this.sortStartQueue.length}, pendingAsyncOps: ${this.pendingAsyncOps}`);
     }
 
     endSorting() {
         if (!this.enabled || !this.currentFrame) return;
         
         // Check if startSorting was called
-        if (this.sortStart === 0) {
-            console.warn(`⚠️ endSorting() called but startSorting() was not called`);
+        if (this.sortStartQueue.length === 0) {
+            console.warn(`⚠️ endSorting() called but startSorting() was not called (queue empty)`);
             return;
         }
         
-        this.sortEnd = performance.now();
-        const sortingTime = this.sortEnd - this.sortStart;
-        this.currentFrame.sorting = sortingTime;
+        const sortEnd = performance.now();
+        const sortStart = this.sortStartQueue.shift()!;  // Dequeue the oldest start time (FIFO)
+        const sortingTime = sortEnd - sortStart;
+        
+        console.log(`📊 [Profiler] endSorting() called, sorting time: ${sortingTime.toFixed(2)}ms, queue length: ${this.sortStartQueue.length}, pendingAsyncOps: ${this.pendingAsyncOps - 1}`);
+        
+        // Record the maximum sorting time for this frame
+        // This avoids double-counting overlapping sorts and gives a more accurate measure
+        // of the actual sorting overhead per frame
+        if (sortingTime > this.currentFrame.sorting) {
+            this.currentFrame.sorting = sortingTime;
+        }
         
         // Decrement async operation counter
         this.pendingAsyncOps--;
-        
-        // Reset sortStart
-        this.sortStart = 0;
         
         // Try to save frame if all conditions are met
         this.tryToSaveFrame();
@@ -188,6 +196,11 @@ class PerformanceProfiler {
     private saveCurrentFrame() {
         if (!this.currentFrame) return;
         
+        // Debug: log if saving a frame with 0 sorting time
+        if (this.currentFrame.sorting === 0) {
+            console.warn(`⚠️ Frame ${this.currentFrame.frame} skipped sorting, not counted in sort statistics`);
+        }
+        
         if (this.metrics.length < this.maxFrames) {
             this.metrics.push({ ...this.currentFrame });
         }
@@ -201,6 +214,13 @@ class PerformanceProfiler {
         if (!this.currentFrame) return;
         
         console.warn(`⚠️ Force saving frame ${this.currentFrame.frame} due to timeout`);
+        
+        // Clear any pending sort operations
+        if (this.sortStartQueue.length > 0) {
+            console.warn(`⚠️ Clearing ${this.sortStartQueue.length} pending sort operations`);
+            this.pendingAsyncOps -= this.sortStartQueue.length;
+            this.sortStartQueue = [];
+        }
         
         if (this.metrics.length < this.maxFrames) {
             this.metrics.push({ ...this.currentFrame });
@@ -235,7 +255,11 @@ class PerformanceProfiler {
         };
 
         const positionCalc = this.metrics.map(m => m.positionCalculation);
-        const sorting = this.metrics.map(m => m.sorting);
+        
+        // Filter out frames where sorting was skipped (sorting=0)
+        const sortingData = this.metrics.filter(m => m.sorting > 0).map(m => m.sorting);
+        const skippedSortFrames = this.metrics.filter(m => m.sorting === 0).length;
+        
         const gpuRender = this.metrics.map(m => m.gpuRender);
         const preRender = this.metrics.map(m => m.preRender);
         const postRender = this.metrics.map(m => m.postRender);
@@ -247,7 +271,12 @@ class PerformanceProfiler {
         console.log('Position Calculation (ms):');
         console.log(`  Avg: ${avg(positionCalc).toFixed(2)}, Min: ${min(positionCalc).toFixed(2)}, Max: ${max(positionCalc).toFixed(2)}, P95: ${p95(positionCalc).toFixed(2)}`);
         console.log('Sorting (ms):');
-        console.log(`  Avg: ${avg(sorting).toFixed(2)}, Min: ${min(sorting).toFixed(2)}, Max: ${max(sorting).toFixed(2)}, P95: ${p95(sorting).toFixed(2)}`);
+        if (sortingData.length > 0) {
+            console.log(`  Avg: ${avg(sortingData).toFixed(2)}, Min: ${min(sortingData).toFixed(2)}, Max: ${max(sortingData).toFixed(2)}, P95: ${p95(sortingData).toFixed(2)}`);
+            console.log(`  Frames with sorting: ${sortingData.length}, Frames skipped: ${skippedSortFrames}`);
+        } else {
+            console.log(`  No sorting data (all frames skipped)`);
+        }
         console.log('GPU Render (ms):');
         console.log(`  Avg: ${avg(gpuRender).toFixed(2)}, Min: ${min(gpuRender).toFixed(2)}, Max: ${max(gpuRender).toFixed(2)}, P95: ${p95(gpuRender).toFixed(2)}`);
         console.log('Pre-Render (ms):');

@@ -397,7 +397,18 @@
             const stats = {};
 
             metrics.forEach(metric => {
-                const values = performanceData.map(d => d[metric]).filter(v => v !== undefined);
+                let values = performanceData.map(d => d[metric]).filter(v => v !== undefined);
+                
+                // Special handling for sorting: filter out 0 values (skipped frames)
+                if (metric === 'sorting') {
+                    const originalCount = values.length;
+                    values = values.filter(v => v > 0);
+                    stats[metric] = {
+                        skippedFrames: originalCount - values.length,
+                        totalFrames: originalCount
+                    };
+                }
+                
                 if (values.length === 0) return;
 
                 values.sort((a, b) => a - b);
@@ -407,7 +418,9 @@
                 const max = values[values.length - 1];
                 const p95 = values[Math.floor(values.length * 0.95)];
 
+                // Merge with existing stats (for sorting metric)
                 stats[metric] = {
+                    ...stats[metric],
                     avg, min, max, p95,
                     values,
                     sum
@@ -434,6 +447,14 @@
                 const stat = stats[metric];
                 const card = document.createElement('div');
                 card.className = 'stat-card';
+                
+                let extraInfo = `Min: ${stat.min.toFixed(2)}ms | Max: ${stat.max.toFixed(2)}ms | P95: ${stat.p95.toFixed(2)}ms`;
+                
+                // Add skipped frame info for sorting metric
+                if (metric === 'sorting' && stat.skippedFrames !== undefined) {
+                    extraInfo += `<br><span style="color: #FF6B6B;">⚠️ ${stat.skippedFrames} 帧被跳过 (${(stat.skippedFrames / stat.totalFrames * 100).toFixed(1)}%)</span>`;
+                }
+                
                 card.innerHTML = `
                     <div class="stat-label">${metricNames[metric]}</div>
                     <div>
@@ -441,7 +462,7 @@
                         <span class="stat-unit">ms</span>
                     </div>
                     <div style="margin-top: 10px; font-size: 12px; color: #666;">
-                        Min: ${stat.min.toFixed(2)}ms | Max: ${stat.max.toFixed(2)}ms | P95: ${stat.p95.toFixed(2)}ms
+                        ${extraInfo}
                     </div>
                 `;
                 grid.appendChild(card);
@@ -705,10 +726,16 @@
 
             performanceData.forEach((row, index) => {
                 const tr = document.createElement('tr');
+                
+                // Highlight rows where sorting was skipped
+                const sortingCell = row.sorting === 0 
+                    ? `<td style="color: #FF6B6B; font-weight: bold;">${row.sorting.toFixed(2)} (跳过)</td>`
+                    : `<td>${row.sorting.toFixed(2)}</td>`;
+                
                 tr.innerHTML = `
                     <td>${row.frame}</td>
                     <td>${row.positionCalculation.toFixed(2)}</td>
-                    <td>${row.sorting.toFixed(2)}</td>
+                    ${sortingCell}
                     <td>${row.gpuRender.toFixed(2)}</td>
                     <td>${row.preRender.toFixed(2)}</td>
                     <td>${row.postRender.toFixed(2)}</td>

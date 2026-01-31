@@ -310,7 +310,9 @@ class Splat extends Element {
                 
                 // End sorting timer if we started it
                 if (performanceProfiler.isEnabled()) {
+                    const now = performance.now();
                     performanceProfiler.endSorting();
+                    console.log(`✅ [Frame ${this.lastSortedFrame}] Sort completed at ${now.toFixed(2)}ms (frame-triggered sort)`);
                 }
                 
                 // Now that sorting is complete, update the shader time
@@ -321,6 +323,12 @@ class Splat extends Element {
                 
                 this.scene.forceRender = true;
                 this.scene.app.renderNextFrame = true;
+            } else {
+                // PlayCanvas automatically triggered a sort (likely due to camera movement)
+                // This is NOT counted in our performance metrics!
+                if (performanceProfiler.isEnabled()) {
+                    console.log(`⚠️ Extra sort by PlayCanvas (camera movement) - NOT measured! (changedCounter=${this.changedCounter})`);
+                }
             }
         });
         
@@ -819,6 +827,10 @@ class Splat extends Element {
         // 3. 检查是否需要更新（帧变了 && 没有正在排序）
         const needsUpdate = frame !== this.lastSortedFrame && !this.pendingSort;
         
+        if (performanceProfiler.isEnabled() && frame !== this.lastSortedFrame && this.pendingSort) {
+            console.warn(`⏭️ [Frame ${frame}] Sort SKIPPED! (pendingSort=${this.pendingSort}, lastSortedFrame=${this.lastSortedFrame})`);
+        }
+        
         if (needsUpdate) {
             // 4. 找到对应的 segment
             const segmentIdx = this.findSegment(t_abs);
@@ -842,7 +854,9 @@ class Splat extends Element {
                 // We start timing here because we're about to trigger the sort operation
                 // The actual sorting may happen asynchronously, but we measure from when we request it
                 if (performanceProfiler.isEnabled()) {
+                    const now = performance.now();
                     performanceProfiler.startSorting();
+                    console.log(`🔄 [Frame ${frame}] Sort started at ${now.toFixed(2)}ms, pendingSort=${this.pendingSort}`);
                 }
                 
                 // Trigger sort
