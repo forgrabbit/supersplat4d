@@ -18,9 +18,10 @@ import copyAndWatch from './copy-and-watch.mjs';
 if (process.env.BUILD_TYPE === 'prod') {
     process.env.BUILD_TYPE = 'release';
 }
-// debug, profile, release
-const BUILD_TYPE = process.env.BUILD_TYPE || 'release';
-const ENGINE_DIR = path.resolve(`node_modules/playcanvas/build/playcanvas${BUILD_TYPE === 'debug' ? '.dbg' : ''}/src/index.js`);
+// debug, profiler, release - default profiler for MiniStats sort/render time
+const BUILD_TYPE = process.env.BUILD_TYPE || 'profiler';
+const engineSuffix = BUILD_TYPE === 'debug' ? '.dbg' : BUILD_TYPE === 'profiler' ? '.prf' : '';
+const ENGINE_DIR = path.resolve(`node_modules/playcanvas/build/playcanvas${engineSuffix}/src/index.js`);
 const PCUI_DIR = path.resolve('node_modules/@playcanvas/pcui');
 const HREF = process.env.BASE_HREF || '';
 

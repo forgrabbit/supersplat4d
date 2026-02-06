@@ -8,7 +8,8 @@ import {
     Color,
     Entity,
     Layer,
-    GraphicsDevice
+    GraphicsDevice,
+    MiniStats
 } from 'playcanvas';
 
 import { AssetLoader } from './asset-loader';
@@ -57,6 +58,7 @@ class Scene {
     grid: Grid;
     outline: Outline;
     underlay: Underlay;
+    miniStats: MiniStats;
 
     contentRoot: Entity;
     cameraRoot: Entity;
@@ -221,6 +223,20 @@ class Scene {
     start() {
         // start the app
         this.app.start();
+
+        // Setup MiniStats with Sort, Render, VRAM, GSplats (requires profiler build)
+        const msOptions = MiniStats.getDefaultOptions() as { startSizeIndex: number; stats: Array<{ name: string; stats: string[]; decimalPlaces?: number; unitsName?: string; watermark?: number; multiplier?: number }> };
+        msOptions.startSizeIndex = 2;
+        msOptions.stats.push(
+            { name: 'VRAM', stats: ['vram.tex'], decimalPlaces: 1, multiplier: 1 / (1024 * 1024), unitsName: 'MB', watermark: 1024 },
+            { name: 'GSplats', stats: ['frame.gsplats'], decimalPlaces: 3, multiplier: 1 / 1000000, unitsName: 'M', watermark: 10 },
+            { name: 'Sort', stats: ['frame.sortTime'], decimalPlaces: 1, unitsName: 'ms', watermark: 5 },
+            { name: 'Render', stats: ['frame.renderTime'], decimalPlaces: 1, unitsName: 'ms', watermark: 16 }
+        );
+        this.miniStats = new MiniStats(this.app, msOptions as never);
+
+        // MiniStats needs continuous render loop to update
+        this.app.autoRender = true;
     }
 
     clear() {
@@ -349,6 +365,18 @@ class Scene {
         // update render target size
         this.targetSize.width = Math.ceil(this.app.graphicsDevice.width / this.config.camera.pixelScale);
         this.targetSize.height = Math.ceil(this.app.graphicsDevice.height / this.config.camera.pixelScale);
+
+        // Update gsplat count for MiniStats (non-unified mode has no engine auto-count)
+        let totalGsplats = 0;
+        this.forEachElement((e: Element) => {
+            if (e.type === ElementType.splat) {
+                const splat = e as Splat;
+                if (splat.visible && splat.entity.gsplat?.instance) {
+                    totalGsplats += splat.numSplats;
+                }
+            }
+        });
+        (this.app.renderer as { _gsplatCount?: number })._gsplatCount = totalGsplats;
 
         this.forEachElement(e => e.onPreRender());
 
