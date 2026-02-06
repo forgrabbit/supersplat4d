@@ -27,6 +27,7 @@ import { Tooltips } from './tooltips';
 import { VideoSettingsDialog } from './video-settings-dialog';
 import { ViewCube } from './view-cube';
 import { ViewPanel } from './view-panel';
+import { PerformanceButton } from './performance-button';
 import { version } from '../../package.json';
 
 // ts compiler and vscode find this type, but eslint does not
@@ -238,6 +239,10 @@ class EditorUI {
         appContainer.append(topContainer);
         appContainer.append(tooltipsContainer);
         appContainer.append(shortcutsPopup);
+
+        // Performance monitoring button
+        const performanceButton = new PerformanceButton(events);
+        appContainer.append(performanceButton);
 
         this.appContainer = appContainer;
         this.topContainer = topContainer;

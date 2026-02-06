@@ -91,21 +91,6 @@ class PointerController {
             }
         };
 
-        // Release capture when pointer is cancelled (e.g. user switches tabs, pointer lost)
-        const pointercancel = (event: PointerEvent) => {
-            if (event.pointerType === 'mouse') {
-                if (pressedButton !== -1) {
-                    pressedButton = -1;
-                    target.releasePointerCapture(event.pointerId);
-                }
-            } else {
-                touches = touches.filter(touch => touch.id !== event.pointerId);
-                if (touches.length === 0) {
-                    target.releasePointerCapture(event.pointerId);
-                }
-            }
-        };
-
         const pointermove = (event: PointerEvent) => {
             if (event.pointerType === 'mouse') {
                 // Only process if we're tracking a button
@@ -117,10 +102,8 @@ class PointerController {
                 // 1 = left button, 4 = middle button, 2 = right button
                 const buttonMask = [1, 4, 2][pressedButton];
                 if ((event.buttons & buttonMask) === 0) {
-                    // Button is no longer pressed, clean up and release capture
-                    // (pointerup may not fire when released outside element, e.g. iOS WebKit bug)
+                    // Button is no longer pressed, clean up
                     pressedButton = -1;
-                    target.releasePointerCapture(event.pointerId);
                     return;
                 }
 
@@ -251,7 +234,6 @@ class PointerController {
 
         wrap(target, 'pointerdown', pointerdown);
         wrap(target, 'pointerup', pointerup);
-        wrap(target, 'pointercancel', pointercancel);
         wrap(target, 'pointermove', pointermove);
         wrap(target, 'wheel', wheel, { passive: false });
         wrap(target, 'dblclick', dblclick);
