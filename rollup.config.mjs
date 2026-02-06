@@ -18,9 +18,17 @@ import copyAndWatch from './copy-and-watch.mjs';
 if (process.env.BUILD_TYPE === 'prod') {
     process.env.BUILD_TYPE = 'release';
 }
-// debug, profile, release
+// debug, profiler, release
 const BUILD_TYPE = process.env.BUILD_TYPE || 'release';
-const ENGINE_DIR = path.resolve(`node_modules/playcanvas/build/playcanvas${BUILD_TYPE === 'debug' ? '.dbg' : ''}/src/index.js`);
+// Use local engine directory instead of node_modules
+// Map: debug -> .dbg, profiler -> .prf, release -> (no suffix)
+let engineSuffix = '';
+if (BUILD_TYPE === 'debug') {
+    engineSuffix = '.dbg';
+} else if (BUILD_TYPE === 'profiler') {
+    engineSuffix = '.prf';
+}
+const ENGINE_DIR = path.resolve(`../engine/build/playcanvas${engineSuffix}/src/index.js`);
 const PCUI_DIR = path.resolve('node_modules/@playcanvas/pcui');
 const HREF = process.env.BASE_HREF || '';
 

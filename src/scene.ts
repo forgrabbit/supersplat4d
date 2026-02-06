@@ -9,7 +9,8 @@ import {
     Entity,
     Layer,
     GraphicsDevice,
-    WebglGraphicsDevice
+    WebglGraphicsDevice,
+    MiniStats
 } from 'playcanvas';
 
 import { AssetLoader } from './asset-loader';
@@ -25,7 +26,6 @@ import { SceneState } from './scene-state';
 import { Splat } from './splat';
 import { SplatOverlay } from './splat-overlay';
 import { Underlay } from './underlay';
-import { performanceProfiler } from './performance-profiler';
 
 class Scene {
     events: Events;
@@ -59,6 +59,7 @@ class Scene {
     grid: Grid;
     outline: Outline;
     underlay: Underlay;
+    miniStats: MiniStats;
 
     contentRoot: Entity;
     cameraRoot: Entity;
@@ -223,6 +224,75 @@ class Scene {
     start() {
         // start the app
         this.app.start();
+
+        // Setup MiniStats - exactly like Gaussian splatting examples
+        const msOptions = MiniStats.getDefaultOptions() as any;
+        
+        // Debug: log the default options
+        console.log('[Scene] Default msOptions:', msOptions);
+        console.log('[Scene] Default sizes:', msOptions.sizes);
+        
+        msOptions.startSizeIndex = 2; // Use index 1: 128x32 with graphs
+        console.log('[Scene] Set startSizeIndex to:', msOptions.startSizeIndex)
+        
+        // Add VRAM stats
+        msOptions.stats.push({
+            name: 'VRAM',
+            stats: ['vram.tex'],
+            decimalPlaces: 1,
+            multiplier: 1 / (1024 * 1024),
+            unitsName: 'MB',
+            watermark: 1024
+        });
+        
+        // Add GSplats stats
+        msOptions.stats.push({
+            name: 'GSplats',
+            stats: ['frame.gsplats'],
+            decimalPlaces: 3,
+            multiplier: 1 / 1000000,
+            unitsName: 'M',
+            watermark: 10
+        });
+
+        // Add Sort time (requires debug/profiler build)
+        msOptions.stats.push({
+            name: 'Sort',
+            stats: ['frame.sortTime'],
+            decimalPlaces: 1,
+            unitsName: 'ms',
+            watermark: 5
+        });
+
+        // Add Render time (requires debug/profiler build)
+        msOptions.stats.push({
+            name: 'Render',
+            stats: ['frame.renderTime'],
+            decimalPlaces: 1,
+            unitsName: 'ms',
+            watermark: 16
+        });
+
+        this.miniStats = new MiniStats(this.app, msOptions);
+        
+        // Debug: check MiniStats state after creation
+        console.log('[Scene] MiniStats created');
+        console.log('[Scene] MiniStats.width:', (this.miniStats as any).width);
+        console.log('[Scene] MiniStats.height:', (this.miniStats as any).height);
+        console.log('[Scene] MiniStats.activeSizeIndex:', (this.miniStats as any).activeSizeIndex);
+        console.log('[Scene] MiniStats.graphs.length:', (this.miniStats as any).graphs.length);
+        console.log('[Scene] MiniStats.graphs[0].enabled:', (this.miniStats as any).graphs[0]?.enabled);
+        
+        // Always show MiniStats in bottom-left
+        const miniStatsDiv = document.getElementById('mini-stats');
+        if (miniStatsDiv) {
+            miniStatsDiv.style.zIndex = '10001';
+            miniStatsDiv.style.pointerEvents = 'auto';
+            console.log('[Scene] MiniStats div size:', miniStatsDiv.style.width, 'x', miniStatsDiv.style.height);
+        }
+        
+        // MiniStats content is WebGL-rendered, needs continuous render loop
+        this.app.autoRender = true;
     }
 
     clear() {
@@ -302,13 +372,6 @@ class Scene {
     }
 
     private onUpdate(deltaTime: number) {
-        // Performance measurement: start frame timing
-        // Always start frame timing if profiler is enabled, regardless of renderNextFrame
-        // This ensures positionCalculation and other metrics can be recorded even if frame doesn't render
-        if (performanceProfiler.isEnabled()) {
-            performanceProfiler.startFrame();
-        }
-        
         // allow elements to update
         this.forEachElement(e => e.onUpdate(deltaTime));
 
@@ -349,11 +412,6 @@ class Scene {
     }
 
     private onPreRender() {
-        // Performance measurement: start pre-render timing
-        if (performanceProfiler.isEnabled()) {
-            performanceProfiler.startPreRender();
-        }
-        
         if (this.canvasResize) {
             this.canvas.width = this.canvasResize.width;
             this.canvas.height = this.canvasResize.height;
@@ -364,12 +422,22 @@ class Scene {
         this.targetSize.width = Math.ceil(this.app.graphicsDevice.width / this.config.camera.pixelScale);
         this.targetSize.height = Math.ceil(this.app.graphicsDevice.height / this.config.camera.pixelScale);
 
+        // Manually update gsplat count for MiniStats (since we're not using unified mode)
+        // This is necessary because SuperSplat needs direct instance access for editing
+        let totalGsplats = 0;
+        this.forEachElement((e: Element) => {
+            if (e.type === ElementType.splat) {
+                const splat = e as Splat;
+                if (splat.visible && splat.entity.gsplat?.instance) {
+                    // Count visible, non-deleted splats
+                    totalGsplats += splat.numSplats;
+                }
+            }
+        });
+        // Update renderer stats for MiniStats to read
+        this.app.renderer._gsplatCount = totalGsplats;
+
         this.forEachElement(e => e.onPreRender());
-        
-        // Performance measurement: start GPU render timing (before actual render)
-        if (performanceProfiler.isEnabled()) {
-            performanceProfiler.startGpuRender();
-        }
 
         this.events.fire('prerender', this.camera.entity.getWorldTransform());
 
@@ -403,23 +471,9 @@ class Scene {
     }
 
     private onPostRender() {
-        // Performance measurement: end GPU render timing (use gl.finish() to ensure GPU work is complete)
-        if (performanceProfiler.isEnabled()) {
-            const glDevice = this.app.graphicsDevice as WebglGraphicsDevice;
-            if (glDevice && glDevice.gl) {
-                glDevice.gl.finish(); // Block until all GPU commands are complete
-            }
-            performanceProfiler.endGpuRender();
-        }
-        
         this.forEachElement(e => e.onPostRender());
 
         this.events.fire('postrender');
-        
-        // Performance measurement: end post-render timing and frame
-        if (performanceProfiler.isEnabled()) {
-            performanceProfiler.endPostRender();
-        }
     }
 }
 

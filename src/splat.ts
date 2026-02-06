@@ -28,7 +28,6 @@ import { State } from './splat-state';
 import { Transform } from './transform';
 import { TransformPalette } from './transform-palette';
 import type { DynManifest } from './loaders/dyn';
-import { performanceProfiler } from './performance-profiler';
 
 const vec = new Vec3();
 const veca = new Vec3();
@@ -142,6 +141,7 @@ class Splat extends Element {
 
         this.entity = new Entity('splatEntitiy');
         this.entity.setEulerAngles(orientation);
+        // Note: NOT using unified mode because SuperSplat needs direct instance access for editing
         this.entity.addComponent('gsplat', { asset });
 
         // Wait for instance to be created if needed
@@ -304,16 +304,9 @@ class Splat extends Element {
         instance.sorter.on('updated', () => {
             this.changedCounter++;
             
-            // Performance measurement: record sorting completion time
+            // Record sorting completion
             if (this.pendingSort) {
                 this.pendingSort = false;
-                
-                // End sorting timer if we started it
-                if (performanceProfiler.isEnabled()) {
-                    const now = performance.now();
-                    performanceProfiler.endSorting();
-                    console.log(`✅ [Frame ${this.lastSortedFrame}] Sort completed at ${now.toFixed(2)}ms (frame-triggered sort)`);
-                }
                 
                 // Now that sorting is complete, update the shader time
                 // This ensures rendering uses the same time as sorting
@@ -323,12 +316,6 @@ class Splat extends Element {
                 
                 this.scene.forceRender = true;
                 this.scene.app.renderNextFrame = true;
-            } else {
-                // PlayCanvas automatically triggered a sort (likely due to camera movement)
-                // This is NOT counted in our performance metrics!
-                if (performanceProfiler.isEnabled()) {
-                    console.log(`⚠️ Extra sort by PlayCanvas (camera movement) - NOT measured! (changedCounter=${this.changedCounter})`);
-                }
             }
         });
         
@@ -372,8 +359,6 @@ class Splat extends Element {
             !this._dyn_m0 || !this._dyn_m1 || !this._dyn_m2 || !this._dyn_tc) {
             return;
         }
-        
-        performanceProfiler.startPositionCalculation();
         
         const x0 = this._dyn_x0;
         const y0 = this._dyn_y0;
@@ -425,8 +410,6 @@ class Splat extends Element {
             centers[o + 1] = y0[idx] + m1[idx] * dt;
             centers[o + 2] = z0[idx] + m2[idx] * dt;
         }
-        
-        performanceProfiler.endPositionCalculation();
     }
 
     // Update motion and trbf textures from GSplatData
@@ -827,10 +810,6 @@ class Splat extends Element {
         // 3. 检查是否需要更新（帧变了 && 没有正在排序）
         const needsUpdate = frame !== this.lastSortedFrame && !this.pendingSort;
         
-        if (performanceProfiler.isEnabled() && frame !== this.lastSortedFrame && this.pendingSort) {
-            console.warn(`⏭️ [Frame ${frame}] Sort SKIPPED! (pendingSort=${this.pendingSort}, lastSortedFrame=${this.lastSortedFrame})`);
-        }
-        
         if (needsUpdate) {
             // 4. 找到对应的 segment
             const segmentIdx = this.findSegment(t_abs);
@@ -849,15 +828,6 @@ class Splat extends Element {
                 this.pendingSort = true;
                 this.lastSortedFrame = frame;
                 this.lastSortedTime = t_abs;
-                
-                // Performance measurement: start sorting timer BEFORE triggering sort
-                // We start timing here because we're about to trigger the sort operation
-                // The actual sorting may happen asynchronously, but we measure from when we request it
-                if (performanceProfiler.isEnabled()) {
-                    const now = performance.now();
-                    performanceProfiler.startSorting();
-                    console.log(`🔄 [Frame ${frame}] Sort started at ${now.toFixed(2)}ms, pendingSort=${this.pendingSort}`);
-                }
                 
                 // Trigger sort
                 // Note: According to render.ts comments, sorting happens automatically during rendering
