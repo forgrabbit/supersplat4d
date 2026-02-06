@@ -20,7 +20,7 @@ if (process.env.BUILD_TYPE === 'prod') {
 }
 // debug, profiler, release
 const BUILD_TYPE = process.env.BUILD_TYPE || 'release';
-// Use local engine directory instead of node_modules
+// Use npm playcanvas package (node_modules/playcanvas)
 // Map: debug -> .dbg, profiler -> .prf, release -> (no suffix)
 let engineSuffix = '';
 if (BUILD_TYPE === 'debug') {
@@ -28,7 +28,7 @@ if (BUILD_TYPE === 'debug') {
 } else if (BUILD_TYPE === 'profiler') {
     engineSuffix = '.prf';
 }
-const ENGINE_DIR = path.resolve(`../engine/build/playcanvas${engineSuffix}/src/index.js`);
+const ENGINE_DIR = path.resolve(`node_modules/playcanvas/build/playcanvas${engineSuffix}/src/index.js`);
 const PCUI_DIR = path.resolve('node_modules/@playcanvas/pcui');
 const HREF = process.env.BASE_HREF || '';
 
