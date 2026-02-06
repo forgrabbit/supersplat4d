@@ -8,8 +8,7 @@ import {
     Color,
     Entity,
     Layer,
-    GraphicsDevice,
-    WebglGraphicsDevice
+    GraphicsDevice
 } from 'playcanvas';
 
 import { AssetLoader } from './asset-loader';
@@ -25,7 +24,6 @@ import { SceneState } from './scene-state';
 import { Splat } from './splat';
 import { SplatOverlay } from './splat-overlay';
 import { Underlay } from './underlay';
-import { performanceProfiler } from './performance-profiler';
 
 class Scene {
     events: Events;
@@ -302,13 +300,6 @@ class Scene {
     }
 
     private onUpdate(deltaTime: number) {
-        // Performance measurement: start frame timing
-        // Always start frame timing if profiler is enabled, regardless of renderNextFrame
-        // This ensures positionCalculation and other metrics can be recorded even if frame doesn't render
-        if (performanceProfiler.isEnabled()) {
-            performanceProfiler.startFrame();
-        }
-        
         // allow elements to update
         this.forEachElement(e => e.onUpdate(deltaTime));
 
@@ -349,11 +340,6 @@ class Scene {
     }
 
     private onPreRender() {
-        // Performance measurement: start pre-render timing
-        if (performanceProfiler.isEnabled()) {
-            performanceProfiler.startPreRender();
-        }
-        
         if (this.canvasResize) {
             this.canvas.width = this.canvasResize.width;
             this.canvas.height = this.canvasResize.height;
@@ -365,11 +351,6 @@ class Scene {
         this.targetSize.height = Math.ceil(this.app.graphicsDevice.height / this.config.camera.pixelScale);
 
         this.forEachElement(e => e.onPreRender());
-        
-        // Performance measurement: start GPU render timing (before actual render)
-        if (performanceProfiler.isEnabled()) {
-            performanceProfiler.startGpuRender();
-        }
 
         this.events.fire('prerender', this.camera.entity.getWorldTransform());
 
@@ -403,23 +384,9 @@ class Scene {
     }
 
     private onPostRender() {
-        // Performance measurement: end GPU render timing (use gl.finish() to ensure GPU work is complete)
-        if (performanceProfiler.isEnabled()) {
-            const glDevice = this.app.graphicsDevice as WebglGraphicsDevice;
-            if (glDevice && glDevice.gl) {
-                glDevice.gl.finish(); // Block until all GPU commands are complete
-            }
-            performanceProfiler.endGpuRender();
-        }
-        
         this.forEachElement(e => e.onPostRender());
 
         this.events.fire('postrender');
-        
-        // Performance measurement: end post-render timing and frame
-        if (performanceProfiler.isEnabled()) {
-            performanceProfiler.endPostRender();
-        }
     }
 }
 
