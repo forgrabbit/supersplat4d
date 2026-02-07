@@ -226,7 +226,7 @@ class Scene {
 
         // Setup MiniStats with Sort, Render, VRAM, GSplats (requires profiler build)
         const msOptions = MiniStats.getDefaultOptions() as { startSizeIndex: number; stats: Array<{ name: string; stats: string[]; decimalPlaces?: number; unitsName?: string; watermark?: number; multiplier?: number }> };
-        msOptions.startSizeIndex = 2;
+        msOptions.startSizeIndex = 0;
         msOptions.stats.push(
             { name: 'VRAM', stats: ['vram.tex'], decimalPlaces: 1, multiplier: 1 / (1024 * 1024), unitsName: 'MB', watermark: 1024 },
             { name: 'GSplats', stats: ['frame.gsplats'], decimalPlaces: 3, multiplier: 1 / 1000000, unitsName: 'M', watermark: 10 },
