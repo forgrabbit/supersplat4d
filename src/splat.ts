@@ -22,16 +22,18 @@ import {
 } from 'playcanvas';
 
 import { Element, ElementType } from './element';
+import type { DynManifest } from './loaders/dyn';
 import { Serializer } from './serializer';
 import { vertexShader, fragmentShader, gsplatCenter } from './shaders/splat-shader';
 import { State } from './splat-state';
 import { Transform } from './transform';
 import { TransformPalette } from './transform-palette';
-import type { DynManifest } from './loaders/dyn';
 
 const vec = new Vec3();
 const veca = new Vec3();
 const vecb = new Vec3();
+const vecc = new Vec3();
+const mat = new Mat4();
 
 const boundingPoints =
     [-1, 1].map((x) => {
@@ -84,6 +86,9 @@ class Splat extends Element {
 
     rebuildMaterial: (bands: number) => void;
 
+    hasVisibilitySH = false;
+    private _freezeOpacityHandler: ((enabled: boolean) => void) | null = null;
+
     // Dynamic gaussian support
     isDynamic = false;
     dynManifest: DynManifest | null = null;
@@ -129,6 +134,7 @@ class Splat extends Element {
 
         // Check if this is a dynamic gaussian
         const resource = asset.resource as GSplatResource;
+        this.hasVisibilitySH = !!(resource as any).hasVisibilitySH;
         if ((resource as any).dynManifest) {
             this.isDynamic = true;
             this.dynManifest = (resource as any).dynManifest as DynManifest;
@@ -196,8 +202,11 @@ class Splat extends Element {
         });
 
         // Get texture dimensions from resource
-        // GSplatResource should have colorTexture after initialization
-        const { width, height } = splatResource.colorTexture;
+        const splatColor = splatResource.getTexture('splatColor');
+        if (!splatColor) {
+            throw new Error('GSplat resource is missing splatColor texture');
+        }
+        const { width, height } = splatColor;
 
         // pack spherical harmonic data
         const createTexture = (name: string, format: number) => {
@@ -265,6 +274,12 @@ class Splat extends Element {
             glsl.set('gsplatCenterVS', gsplatCenter);
 
             material.setDefine('SH_BANDS', `${Math.min(bands, (instance.resource as GSplatResource).shBands)}`);
+            material.setDefine('HAS_VISIBILITY', this.hasVisibilitySH);
+            if (this.hasVisibilitySH && this.scene) {
+                material.setDefine('FROZEN_OPACITY', !!this.scene.events.invoke('visibility.freezeEffectiveOpacity'));
+            } else {
+                material.setDefine('FROZEN_OPACITY', false);
+            }
             material.setParameter('splatState', this.stateTexture);
             material.setParameter('splatTransform', this.transformTexture);
             
@@ -709,6 +724,27 @@ class Splat extends Element {
         this.scene.events.on('view.bands', this.rebuildMaterial, this);
         this.rebuildMaterial(this.scene.events.invoke('view.bands'));
 
+        if (this.hasVisibilitySH) {
+            const initialFrozen = !!this.scene.events.invoke('visibility.freezeEffectiveOpacity');
+            if (initialFrozen) {
+                this.freezeEffectiveOpacity();
+            }
+
+            this._freezeOpacityHandler = (enabled: boolean) => {
+                const material = this.entity.gsplat.instance.material;
+                material.setDefine('FROZEN_OPACITY', enabled);
+                material.update();
+
+                if (enabled) {
+                    this.freezeEffectiveOpacity();
+                }
+
+                this.scene.forceRender = true;
+                this.scene.app.renderNextFrame = true;
+            };
+            this.scene.events.on('visibility.freezeEffectiveOpacity', this._freezeOpacityHandler);
+        }
+
         // we must update state in case the state data was loaded from ply
         this.updateState();
 
@@ -766,8 +802,173 @@ class Splat extends Element {
         }
     }
 
+    private sigmoid(v: number) {
+        if (v >= 0) {
+            return 1 / (1 + Math.exp(-v));
+        }
+        const t = Math.exp(v);
+        return t / (1 + t);
+    }
+
+    private evalVisibilitySHDeg3(dx: number, dy: number, dz: number, sh: Float32Array[], i: number) {
+        const x = dx;
+        const y = dy;
+        const z = dz;
+        const xx = x * x;
+        const yy = y * y;
+        const zz = z * z;
+
+        const C0 = 0.28209479177387814;
+        const C1 = 0.4886025119029199;
+        const C2_0 = 1.0925484305920792;
+        const C2_1 = -1.0925484305920792;
+        const C2_2 = 0.31539156525252005;
+        const C2_3 = -1.0925484305920792;
+        const C2_4 = 0.5462742152960396;
+        const C3_0 = -0.5900435899266435;
+        const C3_1 = 2.890611442640554;
+        const C3_2 = -0.4570457994644658;
+        const C3_3 = 0.3731763325901154;
+        const C3_4 = -0.4570457994644658;
+        const C3_5 = 1.445305721320277;
+        const C3_6 = -0.5900435899266435;
+
+        let r = 0;
+        r += C0 * sh[0][i];
+
+        r += (-C1 * y) * sh[1][i];
+        r += (C1 * z) * sh[2][i];
+        r += (-C1 * x) * sh[3][i];
+
+        r += C2_0 * (x * y) * sh[4][i];
+        r += C2_1 * (y * z) * sh[5][i];
+        r += C2_2 * (2 * zz - xx - yy) * sh[6][i];
+        r += C2_3 * (x * z) * sh[7][i];
+        r += C2_4 * (xx - yy) * sh[8][i];
+
+        r += C3_0 * y * (3 * xx - yy) * sh[9][i];
+        r += C3_1 * (x * y * z) * sh[10][i];
+        r += C3_2 * y * (4 * zz - xx - yy) * sh[11][i];
+        r += C3_3 * z * (2 * zz - 3 * xx - 3 * yy) * sh[12][i];
+        r += C3_4 * x * (4 * zz - xx - yy) * sh[13][i];
+        r += C3_5 * z * (xx - yy) * sh[14][i];
+        r += C3_6 * x * (xx - 3 * yy) * sh[15][i];
+
+        return r;
+    }
+
+    freezeEffectiveOpacity() {
+        if (!this.hasVisibilitySH) {
+            return;
+        }
+
+        const resource = this.asset.resource as GSplatResource;
+        const frozenTex = (resource as any).streams?.getTexture?.('splatFrozenOpacity') as Texture | undefined;
+        if (!frozenTex) {
+            throw new Error('Frozen opacity texture not available');
+        }
+
+        const x = this.splatData.getProp('x') as Float32Array;
+        const y = this.splatData.getProp('y') as Float32Array;
+        const z = this.splatData.getProp('z') as Float32Array;
+        const opacity = this.splatData.getProp('opacity') as Float32Array;
+
+        const motion0 = this.splatData.getProp('motion_0') as Float32Array | null;
+        const motion1 = this.splatData.getProp('motion_1') as Float32Array | null;
+        const motion2 = this.splatData.getProp('motion_2') as Float32Array | null;
+        const trbfCenter = this.splatData.getProp('trbf_center') as Float32Array | null;
+        const trbfScale = this.splatData.getProp('trbf_scale') as Float32Array | null;
+
+        const sh: Float32Array[] = [];
+        for (let k = 0; k < 16; k++) {
+            const arr = this.splatData.getProp(`v_sh_${k}`) as Float32Array | null;
+            if (!arr) {
+                throw new Error(`Missing visibility SH property v_sh_${k}`);
+            }
+            sh.push(arr);
+        }
+
+        // Camera position in model space (same space as x/y/z)
+        const camWorld = this.scene.camera.entity.getPosition();
+        mat.copy(this.entity.getWorldTransform()).invert();
+        mat.transformPoint(camWorld, vecc);
+        const camX = vecc.x;
+        const camY = vecc.y;
+        const camZ = vecc.z;
+
+        const useDynamic =
+            this.isDynamic &&
+            !!this.dynManifest &&
+            !!motion0 && !!motion1 && !!motion2 &&
+            !!trbfCenter && !!trbfScale;
+
+        let t_abs = 0;
+        if (useDynamic) {
+            // Prefer the actual time used for rendering (stable playback), fallback to timeline time.
+            if (this.lastSortedTime === this.lastSortedTime) {
+                t_abs = this.lastSortedTime;
+            } else {
+                const events = this.scene.events;
+                const currentFrame = (events.invoke('timeline.frame') ?? 0) as number;
+                const totalFrames = Math.ceil(this.dynManifest!.duration * this.dynManifest!.fps);
+                const frame = currentFrame % totalFrames;
+                t_abs = this.dynManifest!.start + (frame / this.dynManifest!.fps);
+            }
+        }
+
+        const numSplats = this.numSplats;
+
+        const locked = frozenTex.lock() as unknown as Float32Array | ArrayBufferView;
+        const data = locked instanceof Float32Array ? locked : new Float32Array((locked as any).buffer);
+
+        data.fill(0);
+
+        for (let i = 0; i < numSplats; i++) {
+            let cx = x[i];
+            let cy = y[i];
+            let cz = z[i];
+
+            let opBefore = this.sigmoid(opacity[i]);
+
+            if (useDynamic) {
+                const dt = t_abs - (trbfCenter as Float32Array)[i];
+
+                // Match shader center: p(t) = p0 + motion * dt
+                cx = cx + (motion0 as Float32Array)[i] * dt;
+                cy = cy + (motion1 as Float32Array)[i] * dt;
+                cz = cz + (motion2 as Float32Array)[i] * dt;
+
+                // Match shader dynamic opacity: exp(-dt_scaled^2)
+                const ts = Math.max((trbfScale as Float32Array)[i], 1e-6);
+                const dtScaled = dt / ts;
+                const gaussian = Math.exp(-(dtScaled * dtScaled));
+                opBefore *= gaussian;
+            }
+
+            const dx = cx - camX;
+            const dy = cy - camY;
+            const dz = cz - camZ;
+            const invLen = 1 / Math.max(1e-6, Math.sqrt(dx * dx + dy * dy + dz * dz));
+            const vx = dx * invLen;
+            const vy = dy * invLen;
+            const vz = dz * invLen;
+
+            const visRaw = this.evalVisibilitySHDeg3(vx, vy, vz, sh, i);
+            const visibility = this.sigmoid(visRaw);
+            const opEff = visibility * opBefore;
+
+            data[i] = opEff;
+        }
+
+        frozenTex.unlock();
+    }
+
     remove() {
         this.scene.events.off('view.bands', this.rebuildMaterial, this);
+        if (this._freezeOpacityHandler) {
+            this.scene.events.off('visibility.freezeEffectiveOpacity', this._freezeOpacityHandler);
+            this._freezeOpacityHandler = null;
+        }
 
         this.scene.contentRoot.removeChild(this.entity);
         this.scene.boundDirty = true;
@@ -850,6 +1051,16 @@ class Splat extends Element {
         const cameraMode = events.invoke('camera.mode');
         const cameraOverlay = events.invoke('camera.overlay');
         const material = this.entity.gsplat.instance.material;
+
+        if (this.hasVisibilitySH) {
+            const frozen = !!events.invoke('visibility.freezeEffectiveOpacity');
+            if (!frozen) {
+                const camWorld = this.scene.camera.entity.getPosition();
+                mat.copy(this.entity.getWorldTransform()).invert();
+                mat.transformPoint(camWorld, vecc);
+                material.setParameter('uCameraPosition', [vecc.x, vecc.y, vecc.z]);
+            }
+        }
 
         // ========== VISUAL SETTINGS ==========
         // configure rings rendering

@@ -30,6 +30,22 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         scene.forceRender = true;
     });
 
+    // Freeze effective opacity (visibility-trained models)
+    let freezeEffectiveOpacity = false;
+
+    const setFreezeEffectiveOpacity = (enabled: boolean) => {
+        if (enabled !== freezeEffectiveOpacity) {
+            freezeEffectiveOpacity = enabled;
+            events.fire('visibility.freezeEffectiveOpacity', freezeEffectiveOpacity);
+            scene.forceRender = true;
+        }
+    };
+
+    events.function('visibility.freezeEffectiveOpacity', () => freezeEffectiveOpacity);
+    events.on('visibility.toggleFreezeOpacity', () => {
+        setFreezeEffectiveOpacity(!freezeEffectiveOpacity);
+    });
+
     /**
      * Check if a splat is visible at current time (for dynamic gaussians)
      * Returns true for static gaussians or if frameOnlyMode is disabled

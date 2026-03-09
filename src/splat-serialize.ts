@@ -1115,6 +1115,7 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
 
 export {
     Writer,
+    SplatTransformCache,
     serializePly,
     serializePlyCompressed,
     serializeSplat,

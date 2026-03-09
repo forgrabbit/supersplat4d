@@ -1,0 +1,19 @@
+<svg width="38" height="38" viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M19 6V32" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M8 12L30 26" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M30 12L8 26" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M19 6L16.5 9.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M19 6L21.5 9.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M19 32L16.5 28.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M19 32L21.5 28.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M8 12L12 12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M8 12L10.2 15.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M30 26L26 25.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M30 26L27.8 22.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M30 12L26 12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M30 12L27.8 15.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M8 26L12 25.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <path d="M8 26L10.2 22.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <circle cx="19" cy="19" r="2.2" stroke="currentColor" stroke-width="1.6" fill="none"/>
+</svg>
+

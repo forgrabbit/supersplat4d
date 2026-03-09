@@ -271,7 +271,11 @@ class DataProcessor {
         const { scope } = device;
 
         const numSplats = splat.splatData.numSplats;
-        const transformA = (splat.entity.gsplat.instance.resource as GSplatResource).transformATexture;
+        const resource = splat.entity.gsplat.instance.resource as GSplatResource;
+        const transformA = resource.getTexture('transformA');
+        if (!transformA) {
+            throw new Error('GSplat resource is missing transformA texture');
+        }
         const splatTransform = splat.transformTexture;
         const transformPalette = splat.transformPalette.texture;
 
@@ -381,7 +385,10 @@ class DataProcessor {
         const { scope } = device;
 
         const numSplats = splat.splatData.numSplats;
-        const transformA = (splat.entity.gsplat.instance.resource as GSplatResource).transformATexture;
+        const transformA = (splat.entity.gsplat.instance.resource as GSplatResource).getTexture('transformA');
+        if (!transformA) {
+            throw new Error('GSplat resource is missing transformA texture');
+        }
         const splatTransform = splat.transformTexture;
         const transformPalette = splat.transformPalette.texture;
         const splatState = splat.stateTexture;
@@ -443,7 +450,10 @@ class DataProcessor {
         const { scope } = device;
 
         const numSplats = splat.splatData.numSplats;
-        const transformA = (splat.entity.gsplat.instance.resource as GSplatResource).transformATexture;
+        const transformA = (splat.entity.gsplat.instance.resource as GSplatResource).getTexture('transformA');
+        if (!transformA) {
+            throw new Error('GSplat resource is missing transformA texture');
+        }
         const splatTransform = splat.transformTexture;
         const transformPalette = splat.transformPalette.texture;
 

@@ -3,11 +3,12 @@
  * Supports PLY and SOG4D formats with time range selection
  */
 
-import { GSplatData } from 'playcanvas';
+import { GSplatData, Mat4, Quat, Vec3 } from 'playcanvas';
 import { Splat } from './splat';
 import { State } from './splat-state';
 import type { DynamicExportOptions } from './ui/dynamic-export-dialog';
 import type { DynManifest } from './loaders/dyn';
+import { SplatTransformCache } from './splat-serialize';
 
 // JSZip is loaded globally via script tag
 declare const JSZip: any;
@@ -282,6 +283,38 @@ const serializeDynamicPly = async (
     await writer.write(headerBytes);
     bytesWritten += headerBytes.length;
     
+    // -------------------------------------------------------------------------
+    // Build transform cache: bakes entity world transform + per-splat palette
+    // transforms into the exported data, matching static PLY export behaviour.
+    // -------------------------------------------------------------------------
+    const transformCache = new SplatTransformCache(splat);
+
+    // Pre-fetch raw source arrays for the properties that need transform baking.
+    // These are read once and reused in the inner loop for performance.
+    const rawX   = propMap.get('x')?.storage as Float32Array | null;
+    const rawY   = propMap.get('y')?.storage as Float32Array | null;
+    const rawZ   = propMap.get('z')?.storage as Float32Array | null;
+    const rawM0  = propMap.get('motion_0')?.storage as Float32Array | null;
+    const rawM1  = propMap.get('motion_1')?.storage as Float32Array | null;
+    const rawM2  = propMap.get('motion_2')?.storage as Float32Array | null;
+    // PLY quaternion convention: rot_0=w, rot_1=x, rot_2=y, rot_3=z
+    const rawR0  = propMap.get('rot_0')?.storage as Float32Array | null;  // w
+    const rawR1  = propMap.get('rot_1')?.storage as Float32Array | null;  // x
+    const rawR2  = propMap.get('rot_2')?.storage as Float32Array | null;  // y
+    const rawR3  = propMap.get('rot_3')?.storage as Float32Array | null;  // z
+    const rawSc0 = propMap.get('scale_0')?.storage as Float32Array | null;
+    const rawSc1 = propMap.get('scale_1')?.storage as Float32Array | null;
+    const rawSc2 = propMap.get('scale_2')?.storage as Float32Array | null;
+
+    const hasPos    = rawX && rawY && rawZ;
+    const hasMotion = rawM0 && rawM1 && rawM2;
+    const hasRot    = rawR0 && rawR1 && rawR2 && rawR3;
+    const hasScale  = rawSc0 && rawSc1 && rawSc2;
+
+    // Temporary objects reused per splat to avoid allocation in the hot loop.
+    const tmpVec  = new Vec3();
+    const tmpQuat = new Quat();
+    
     // Write splat data
     const bufferSize = 1024 * bytesPerSplat;
     const buf = new Uint8Array(bufferSize);
@@ -290,14 +323,73 @@ const serializeDynamicPly = async (
     
     for (let idx = 0; idx < numVisible; idx++) {
         const i = visibleIndices[idx];
+
+        // ------------------------------------------------------------------
+        // Compute baked (transformed) values for this splat.
+        // ------------------------------------------------------------------
+
+        // Position: apply full 4x4 transform (rotation + scale + translation)
+        let bx = 0, by = 0, bz = 0;
+        if (hasPos) {
+            tmpVec.set(rawX![i], rawY![i], rawZ![i]);
+            transformCache.getMat(i).transformPoint(tmpVec, tmpVec);
+            bx = tmpVec.x; by = tmpVec.y; bz = tmpVec.z;
+        }
+
+        // Motion vector: apply 3×3 only (rotation + scale, NO translation).
+        // A velocity/direction is not affected by origin shift.
+        let bm0 = 0, bm1 = 0, bm2 = 0;
+        if (hasMotion) {
+            tmpVec.set(rawM0![i], rawM1![i], rawM2![i]);
+            // Apply rotation/scale only to motion (direction), no translation.
+            transformCache.getMat(i).transformVector(tmpVec, tmpVec);
+            bm0 = tmpVec.x; bm1 = tmpVec.y; bm2 = tmpVec.z;
+        }
+
+        // Rotation quaternion: composite transform rotation onto splat rotation.
+        // Quat.set(x, y, z, w) — PLY convention is rot_0=w, rot_1=x, rot_2=y, rot_3=z.
+        let br0 = 0, br1 = 0, br2 = 0, br3 = 0;
+        if (hasRot) {
+            const transformRot = transformCache.getRot(i);
+            tmpQuat.set(rawR1![i], rawR2![i], rawR3![i], rawR0![i]);
+            tmpQuat.mul2(transformRot, tmpQuat);
+            br0 = tmpQuat.w; br1 = tmpQuat.x; br2 = tmpQuat.y; br3 = tmpQuat.z;
+        }
+
+        // Scale: multiply in linear space, store as log (same as static export).
+        // Use Math.abs to guard against reflections flipping sign.
+        let bsc0 = 0, bsc1 = 0, bsc2 = 0;
+        if (hasScale) {
+            const ts = transformCache.getScale(i);
+            bsc0 = Math.log(Math.exp(rawSc0![i]) * Math.abs(ts.x));
+            bsc1 = Math.log(Math.exp(rawSc1![i]) * Math.abs(ts.y));
+            bsc2 = Math.log(Math.exp(rawSc2![i]) * Math.abs(ts.z));
+        }
         
         for (const prop of props) {
             const storage = prop.storage as Float32Array | Uint8Array;
-            let value = storage[i];
-            
-            // trbf_scale in splatData is linear (exp-converted), but PLY stores log(trbf_scale)
-            if (prop.name === 'trbf_scale') {
-                value = Math.log(Math.max(value, 1e-8));
+            let value: number;
+
+            // Route each property: use the baked value for spatially-dependent
+            // attributes; read storage directly for time/color/opacity fields.
+            switch (prop.name) {
+                case 'x':        value = bx;   break;
+                case 'y':        value = by;   break;
+                case 'z':        value = bz;   break;
+                case 'motion_0': value = bm0;  break;
+                case 'motion_1': value = bm1;  break;
+                case 'motion_2': value = bm2;  break;
+                case 'rot_0':    value = br0;  break;  // w
+                case 'rot_1':    value = br1;  break;  // x
+                case 'rot_2':    value = br2;  break;  // y
+                case 'rot_3':    value = br3;  break;  // z
+                case 'scale_0':  value = bsc0; break;
+                case 'scale_1':  value = bsc1; break;
+                case 'scale_2':  value = bsc2; break;
+                // trbf_scale is stored as exp() in memory, PLY wants log()
+                case 'trbf_scale': value = Math.log(Math.max(storage[i], 1e-8)); break;
+                // trbf_center, f_dc_*, opacity, nx, ny, nz, f_rest_* — no transform needed
+                default: value = storage[i];
             }
             
             if (prop.type === 'uchar') {
@@ -326,7 +418,7 @@ const serializeDynamicPly = async (
         await writer.write(new Uint8Array(buf.buffer, 0, offset));
     }
     
-    console.log(`✅ Dynamic PLY exported: ${numVisible} splats`);
+    console.log(`✅ Dynamic PLY exported: ${numVisible} splats (with transform baked)`);
 };
 
 // =============================================================================

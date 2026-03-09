@@ -26,6 +26,75 @@ vec3 applySaturation(vec3 color) {
     return grey + (color - grey) * saturation;
 }
 
+#ifdef HAS_VISIBILITY
+uniform vec3 uCameraPosition; // Camera position in the same space as modelCenter
+
+float sigmoid(float v) {
+    if (v >= 0.0) {
+        return 1.0 / (1.0 + exp(-v));
+    }
+    float t = exp(v);
+    return t / (1.0 + t);
+}
+
+float evalVisibilitySHDeg3(vec3 d) {
+    vec4 sh0 = loadSplatVisibilitySH0();
+    vec4 sh1 = loadSplatVisibilitySH1();
+    vec4 sh2 = loadSplatVisibilitySH2();
+    vec4 sh3 = loadSplatVisibilitySH3();
+
+    float x = d.x;
+    float y = d.y;
+    float z = d.z;
+    float xx = x * x;
+    float yy = y * y;
+    float zz = z * z;
+
+    const float C0 = 0.28209479177387814;
+    const float C1 = 0.4886025119029199;
+    const float C2_0 = 1.0925484305920792;
+    const float C2_1 = -1.0925484305920792;
+    const float C2_2 = 0.31539156525252005;
+    const float C2_3 = -1.0925484305920792;
+    const float C2_4 = 0.5462742152960396;
+    const float C3_0 = -0.5900435899266435;
+    const float C3_1 = 2.890611442640554;
+    const float C3_2 = -0.4570457994644658;
+    const float C3_3 = 0.3731763325901154;
+    const float C3_4 = -0.4570457994644658;
+    const float C3_5 = 1.445305721320277;
+    const float C3_6 = -0.5900435899266435;
+
+    float r = 0.0;
+
+    // Degree 0
+    r += C0 * sh0.x;
+
+    // Degree 1
+    r += (-C1 * y) * sh0.y;
+    r += ( C1 * z) * sh0.z;
+    r += (-C1 * x) * sh0.w;
+
+    // Degree 2
+    r += C2_0 * (x * y) * sh1.x;
+    r += C2_1 * (y * z) * sh1.y;
+    r += C2_2 * (2.0 * zz - xx - yy) * sh1.z;
+    r += C2_3 * (x * z) * sh1.w;
+    r += C2_4 * (xx - yy) * sh2.x;
+
+    // Degree 3
+    r += C3_0 * y * (3.0 * xx - yy) * sh2.y;
+    r += C3_1 * (x * y * z) * sh2.z;
+    r += C3_2 * y * (4.0 * zz - xx - yy) * sh2.w;
+    r += C3_3 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * sh3.x;
+    r += C3_4 * x * (4.0 * zz - xx - yy) * sh3.y;
+    r += C3_5 * z * (xx - yy) * sh3.z;
+    r += C3_6 * x * (xx - 3.0 * yy) * sh3.w;
+
+    return r;
+}
+#endif
+
 void main(void) {
     // read gaussian details
     SplatSource source;
@@ -35,7 +104,7 @@ void main(void) {
     }
 
     // get per-gaussian edit state, discard if deleted
-    uint vertexState = uint(texelFetch(splatState, source.uv, 0).r * 255.0 + 0.5) & 7u;
+    uint vertexState = uint(texelFetch(splatState, splat.uv, 0).r * 255.0 + 0.5) & 7u;
 
     #if OUTLINE_PASS
         if (vertexState != 1u) {
@@ -73,7 +142,7 @@ void main(void) {
         // Full opacity check (including base opacity) is done in CPU-side selection logic.
         #ifdef DYNAMIC_MODE
         if (uFrameOnlyMode && uIsDynamic) {
-            ivec2 uv = ivec2(source.uv);
+            ivec2 uv = splat.uv;
             vec2 trbfData = texelFetch(splatTrbf, uv, 0).rg;
             float trbfCenter = trbfData.r;
             float trbfScale = trbfData.g;
@@ -100,11 +169,11 @@ void main(void) {
         }
     #endif
 
-    // get center
-    vec3 modelCenter = readCenter(source);
+    // get center (getCenter() must be called before getColor() and loads shared data)
+    vec3 modelCenter = getCenter();
 
     SplatCenter center;
-    if (!initCenter(source, modelCenter, center)) {
+    if (!initCenter(modelCenter, center)) {
         gl_Position = discardVec;
         return;
     }
@@ -115,26 +184,26 @@ void main(void) {
         return;
     }
 
-    gl_Position = center.proj + vec4(corner.offset, 0.0, 0.0);
+    gl_Position = center.proj + vec4(corner.offset.xyz, 0.0);
 
     // store texture coord and locked state
     texCoordIsLocked = vec3(corner.uv, (vertexState & 2u) != 0u ? 1.0 : 0.0);
 
     #if UNDERLAY_PASS
-        color = readColor(source);
+        color = getColor();
         color.xyz = mix(color.xyz, selectedClr.xyz * 0.2, selectedClr.a) * selectedClr.a;
     #elif PICK_PASS
-        uvec4 bits = (uvec4(source.id) >> uvec4(0u, 8u, 16u, 24u)) & uvec4(255u);
+        uvec4 bits = (uvec4(splat.index) >> uvec4(0u, 8u, 16u, 24u)) & uvec4(255u);
         color = vec4(bits) / 255.0;
     // handle splat color
     #elif FORWARD_PASS
         // read color
-        color = readColor(source);
+        color = getColor();
 
         // Apply dynamic opacity for dynamic gaussians
         #ifdef DYNAMIC_MODE
         if (uIsDynamic) {
-            ivec2 uv = ivec2(source.uv);
+            ivec2 uv = splat.uv;
             vec2 trbfData = texelFetch(splatTrbf, uv, 0).rg;
             float trbfCenter = trbfData.r;
             float trbfScale = trbfData.g;
@@ -155,6 +224,23 @@ void main(void) {
         }
         #endif
 
+        #ifdef HAS_VISIBILITY
+            #ifdef FROZEN_OPACITY
+                color.a = loadSplatFrozenOpacity().r;
+            #else
+                vec3 centerForVis = uIsDynamic ? computeDynamicPosition(modelCenter) : modelCenter;
+                vec3 D_view = normalize(centerForVis - uCameraPosition);
+                float visRaw = evalVisibilitySHDeg3(D_view);
+                float visibility = sigmoid(visRaw);
+                color.a *= visibility;
+            #endif
+
+            if (color.a < 0.005) {
+                gl_Position = discardVec;
+                return;
+            }
+        #endif
+
         // evaluate spherical harmonics
         #if SH_BANDS > 0
         // calculate the model-space view direction
@@ -163,7 +249,7 @@ void main(void) {
             // read sh coefficients
             vec3 sh[SH_COEFFS];
             float scale;
-            readSHData(source, sh, scale);
+            readSHData(sh, scale);
 
             // evaluate
             color.xyz += evalSH(sh, dir) * scale;
@@ -242,6 +328,7 @@ const gsplatCenter = /* glsl*/`
 uniform mat4 matrix_model;
 uniform mat4 matrix_view;
 uniform mat4 matrix_projection;
+uniform vec4 camera_params;                     // 1/far, far, near, isOrtho (required by gsplatCornerVS)
 
 uniform highp usampler2D splatTransform;        // per-splat index into transform palette
 uniform sampler2D transformPalette;             // palette of transform matrices
@@ -253,8 +340,8 @@ uniform sampler2D splatMotion;                 // For dynamic: motion_0, motion_
 uniform sampler2D splatTrbf;                    // For dynamic: trbf_center, trbf_scale (RG)
 #endif
 
-mat4 applyPaletteTransform(SplatSource source, mat4 model) {
-    uint transformIndex = texelFetch(splatTransform, source.uv, 0).r;
+mat4 applyPaletteTransform(mat4 model) {
+    uint transformIndex = texelFetch(splatTransform, splat.uv, 0).r;
     if (transformIndex == 0u) {
         return model;
     }
@@ -274,7 +361,7 @@ mat4 applyPaletteTransform(SplatSource source, mat4 model) {
 
 // Compute dynamic position for a gaussian
 // pos(t) = base_pos + motion * (t - trbf_center)  [Linear motion, as in SIBR]
-vec3 computeDynamicPosition(SplatSource source, vec3 basePos) {
+vec3 computeDynamicPosition(vec3 basePos) {
     #ifndef DYNAMIC_MODE
     return basePos;
     #else
@@ -282,8 +369,8 @@ vec3 computeDynamicPosition(SplatSource source, vec3 basePos) {
         return basePos;
     }
     
-    // Read motion and trbf from textures
-    ivec2 uv = ivec2(source.uv);
+    // Read motion and trbf from textures (use global splat.uv)
+    ivec2 uv = splat.uv;
     vec4 motionData = texelFetch(splatMotion, uv, 0);
     vec2 trbfData = texelFetch(splatTrbf, uv, 0).rg;
     
@@ -299,11 +386,11 @@ vec3 computeDynamicPosition(SplatSource source, vec3 basePos) {
 }
 
 // project the model space gaussian center to view and clip space
-bool initCenter(SplatSource source, vec3 modelCenter, out SplatCenter center) {
+bool initCenter(vec3 modelCenter, inout SplatCenter center) {
     // Apply dynamic position transformation if this is a dynamic gaussian
-    vec3 dynamicCenter = uIsDynamic ? computeDynamicPosition(source, modelCenter) : modelCenter;
+    vec3 dynamicCenter = uIsDynamic ? computeDynamicPosition(modelCenter) : modelCenter;
     
-    mat4 modelView = matrix_view * applyPaletteTransform(source, matrix_model);
+    mat4 modelView = matrix_view * applyPaletteTransform(matrix_model);
     vec4 centerView = modelView * vec4(dynamicCenter, 1.0);
 
     // early out if splat is behind the camera
