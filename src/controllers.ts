@@ -16,12 +16,26 @@ class PointerController {
     constructor(camera: Camera, target: HTMLElement) {
 
         const orbit = (dx: number, dy: number) => {
+            if (camera.sibrExactMode && camera.baseSibrPose) {
+                const s = camera.scene.config.controls.orbitSensitivity;
+                camera.applySibrOrbitDelta(-dx * s, -dy * s);
+                return;
+            }
             const azim = camera.azim - dx * camera.scene.config.controls.orbitSensitivity;
             const elev = camera.elevation - dy * camera.scene.config.controls.orbitSensitivity;
             camera.setAzimElev(azim, elev);
         };
 
         const pan = (x: number, y: number, dx: number, dy: number) => {
+            if (camera.sibrExactMode && camera.baseSibrPose) {
+                const c = camera.entity.camera;
+                const distance = camera.distanceTween.value.distance * camera.sceneRadius / camera.fovFactor;
+                c.screenToWorld(x, y, distance, fromWorldPoint);
+                c.screenToWorld(x - dx, y - dy, distance, toWorldPoint);
+                worldDiff.sub2(toWorldPoint, fromWorldPoint);
+                camera.applySibrPanDelta(worldDiff);
+                return;
+            }
             // For panning to work at any zoom level, we use screen point to world projection
             // to work out how far we need to pan the pivotEntity in world space
             const c = camera.entity.camera;
@@ -37,6 +51,11 @@ class PointerController {
         };
 
         const zoom = (amount: number) => {
+            if (camera.sibrExactMode && camera.baseSibrPose) {
+                const dolly = (camera.distance * 0.999 + 0.001) * amount * camera.scene.config.controls.zoomSensitivity * camera.sceneRadius * 0.01;
+                camera.applySibrDollyDelta(-dolly);
+                return;
+            }
             camera.setDistance(camera.distance - (camera.distance * 0.999 + 0.001) * amount * camera.scene.config.controls.zoomSensitivity, 2);
         };
 
@@ -209,12 +228,21 @@ class PointerController {
             const z = keys.ArrowDown - keys.ArrowUp;
 
             if (x || z) {
-                const factor = deltaTime * camera.flySpeed;
-                const worldTransform = camera.entity.getWorldTransform();
-                const xAxis = worldTransform.getX().mulScalar(x * factor);
-                const zAxis = worldTransform.getZ().mulScalar(z * factor);
-                const p = camera.focalPoint.add(xAxis).add(zAxis);
-                camera.setFocalPoint(p);
+                if (camera.sibrExactMode && camera.baseSibrPose) {
+                    const factor = deltaTime * camera.flySpeed;
+                    const worldTransform = camera.entity.getWorldTransform();
+                    worldDiff.set(0, 0, 0);
+                    worldDiff.addScaled(worldTransform.getX(), x * factor);
+                    worldDiff.addScaled(worldTransform.getZ(), z * factor);
+                    camera.applySibrPanDelta(worldDiff);
+                } else {
+                    const factor = deltaTime * camera.flySpeed;
+                    const worldTransform = camera.entity.getWorldTransform();
+                    const xAxis = worldTransform.getX().mulScalar(x * factor);
+                    const zAxis = worldTransform.getZ().mulScalar(z * factor);
+                    const p = camera.focalPoint.add(xAxis).add(zAxis);
+                    camera.setFocalPoint(p);
+                }
             }
         };
 

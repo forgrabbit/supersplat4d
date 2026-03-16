@@ -10,6 +10,8 @@ import { Asset, AssetRegistry, GSplatData, GSplatResource } from 'playcanvas';
 import { AssetSource, createReadSource } from './asset-source';
 import type { DynManifest } from './dyn';
 import { getNextAssetId } from './asset-id-counter';
+import { DefaultCameraPose } from '../camera-default';
+import { parsePlyCamera } from './ply-camera';
 
 // =============================================================================
 // Types
@@ -50,26 +52,43 @@ const parseAndAddDynamicProperties = async (splatData: GSplatData, rawData: Arra
     const header = headerText.substring(0, endHeaderIndex);
     const headerEndOffset = endHeaderIndex + 'end_header'.length + 1;
     
-    // Parse property declarations
-    const propertyLines = header.split('\n').filter(line => line.trim().startsWith('property'));
+    // Parse property declarations for the vertex element only. Ignore properties
+    // declared on other elements (for example, the optional `element camera` we
+    // append for default camera metadata).
+    const headerLines = header.split('\n').map(line => line.trim());
     const properties: Array<{ type: string; name: string; byteSize: number }> = [];
-    
-    for (const line of propertyLines) {
-        const match = line.match(/property\s+(float|uchar|double|int)\s+(\w+)/);
-        if (match) {
-            const type = match[1];
-            const name = match[2];
-            const byteSize = type === 'uchar' ? 1 : 4;
-            properties.push({ type, name, byteSize });
+    let inVertexElement = false;
+    let vertexCount = 0;
+
+    for (let i = 0; i < headerLines.length; i++) {
+        const line = headerLines[i];
+
+        if (line.startsWith('element ')) {
+            inVertexElement = line.startsWith('element vertex');
+            if (inVertexElement) {
+                const vertexMatch = line.match(/element\s+vertex\s+(\d+)/);
+                if (!vertexMatch) {
+                    throw new Error('Invalid PLY: malformed vertex element line');
+                }
+                vertexCount = parseInt(vertexMatch[1], 10);
+            }
+            continue;
+        }
+
+        if (inVertexElement && line.startsWith('property')) {
+            const match = line.match(/property\s+(float|uchar|double|int)\s+(\w+)/);
+            if (match) {
+                const type = match[1];
+                const name = match[2];
+                const byteSize = type === 'uchar' ? 1 : 4;
+                properties.push({ type, name, byteSize });
+            }
         }
     }
-    
-    // Get vertex count
-    const vertexMatch = header.match(/element\s+vertex\s+(\d+)/);
-    if (!vertexMatch) {
-        throw new Error('Invalid PLY: missing vertex element');
+
+    if (!vertexCount || properties.length === 0) {
+        throw new Error('Invalid PLY: missing vertex properties');
     }
-    const vertexCount = parseInt(vertexMatch[1], 10);
     
     // Calculate bytes per vertex
     const bytesPerVertex = properties.reduce((sum, p) => sum + p.byteSize, 0);
@@ -345,23 +364,41 @@ const loadDynamicPly = async (
     // CRITICAL FIX: Cache the raw data to avoid Response body consumption issues
     // Response body can only be read once, so we read it upfront and reuse
     let cachedRawData: ArrayBuffer | null = null;
+    let defaultCameraPose: DefaultCameraPose | null = null;
     
     if (assetSource.contents) {
         // assetSource.contents is File (from file picker) or could be Response
         // Read it upfront to avoid body consumption issues
-        cachedRawData = await assetSource.contents.arrayBuffer();
+        cachedRawData = await (assetSource.contents as any).arrayBuffer();
+    } else {
+        // Fallback: read from URL / filename if available
+        const source = await createReadSource(assetSource);
+        cachedRawData = await source.arrayBuffer();
+    }
+
+    // Attempt to parse optional camera element
+    if (cachedRawData) {
+        try {
+            defaultCameraPose = parsePlyCamera(cachedRawData);
+        } catch (error) {
+            console.warn('Failed to inspect dynamic PLY for camera element:', error);
+        }
     }
     
     // Create contents for PlayCanvas (use cached data if available)
-    const contents = cachedRawData ? new Response(cachedRawData) : 
-                     assetSource.contents ? new Response(assetSource.contents) : 
-                     null;
+    const contents = cachedRawData ? new Response(cachedRawData) :
+        assetSource.contents ? new Response(assetSource.contents) :
+            null;
     
-    const file = {
+    const file: any = {
         url: contents ? `local-asset-${getNextAssetId()}` : assetSource.url ?? assetSource.filename,
         filename: assetSource.filename,
         contents
     };
+
+    if (defaultCameraPose) {
+        file.defaultCamera = defaultCameraPose;
+    }
     
     const data = {
         decompress: true,

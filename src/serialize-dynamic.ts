@@ -9,6 +9,7 @@ import { State } from './splat-state';
 import type { DynamicExportOptions } from './ui/dynamic-export-dialog';
 import type { DynManifest } from './loaders/dyn';
 import { SplatTransformCache } from './splat-serialize';
+import { CAMERA_BYTE_SIZE, CAMERA_HEADER_LINES, writeCameraBinary } from './loaders/ply-camera';
 
 // JSZip is loaded globally via script tag
 declare const JSZip: any;
@@ -258,13 +259,16 @@ const serializeDynamicPly = async (
     
     // Build header with cfg_args
     const cfgArgs = `comment cfg_args: start=${exportStart} duration=${exportDuration} fps=${manifest.fps} sh_degree=${manifest.sh_degree || 0}`;
-    
+
+    const cameraSource = splat.defaultCameraPose ?? null;
+
     const headerLines = [
         'ply',
         'format binary_little_endian 1.0',
         cfgArgs,
         `element vertex ${numVisible}`,
         ...props.map((p: any) => `property ${p.type === 'uchar' ? 'uchar' : 'float'} ${p.name}`),
+        ...(cameraSource ? CAMERA_HEADER_LINES : []),
         'end_header',
         ''
     ];
@@ -276,7 +280,7 @@ const serializeDynamicPly = async (
     const bytesPerSplat = props.reduce((sum: number, p: any) => 
         sum + (p.type === 'uchar' ? 1 : 4), 0);
     
-    const totalBytes = headerBytes.length + numVisible * bytesPerSplat;
+    const totalBytes = headerBytes.length + numVisible * bytesPerSplat + (cameraSource ? CAMERA_BYTE_SIZE : 0);
     let bytesWritten = 0;
     
     // Write header
@@ -416,6 +420,12 @@ const serializeDynamicPly = async (
     // Write remaining data
     if (offset > 0) {
         await writer.write(new Uint8Array(buf.buffer, 0, offset));
+    }
+
+    // Write optional camera element
+    if (cameraSource) {
+        const cameraBuf = writeCameraBinary(cameraSource);
+        await writer.write(cameraBuf);
     }
     
     console.log(`✅ Dynamic PLY exported: ${numVisible} splats (with transform baked)`);

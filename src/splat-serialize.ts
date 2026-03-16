@@ -14,6 +14,7 @@ import { State } from './splat-state';
 import { version } from '../package.json';
 import { BufferWriter, ProgressWriter, Writer } from './serialize/writer';
 import { ZipWriter } from './serialize/zip-writer';
+import { CAMERA_BYTE_SIZE, CAMERA_HEADER_LINES, writeCameraBinary } from './loaders/ply-camera';
 
 type SerializeSettings = {
     maxSHBands?: number;            // specifies the maximum number of bands to be exported
@@ -496,6 +497,9 @@ const serializePly = async (splats: Splat[], serializeSettings: SerializeSetting
         return i < [0, 9, 24, 45][maxSHBands ?? 3];
     });
 
+    // Only embed a camera element when exporting a single splat with a default camera pose.
+    const cameraSource = splats.length === 1 ? splats[0].defaultCameraPose : null;
+
     const headerText = [
         'ply',
         'format binary_little_endian 1.0',
@@ -503,6 +507,7 @@ const serializePly = async (splats: Splat[], serializeSettings: SerializeSetting
         // `comment ${generatedByString}`,
         `element vertex ${totalGaussians}`,
         props.map(p => `property ${p.type} ${p.name}`),
+        ...(cameraSource ? CAMERA_HEADER_LINES : []),
         'end_header',
         ''
     ].flat().join('\n');
@@ -518,7 +523,12 @@ const serializePly = async (splats: Splat[], serializeSettings: SerializeSetting
     const header = new TextEncoder().encode(headerText);
 
     // construct a progress writer over the writer
-    const progressWriter = new ProgressWriter(writer, header.byteLength + totalGaussians * gaussianSizeBytes, progress);
+    const totalBytes =
+        header.byteLength +
+        totalGaussians * gaussianSizeBytes +
+        (cameraSource ? CAMERA_BYTE_SIZE : 0);
+
+    const progressWriter = new ProgressWriter(writer, totalBytes, progress);
 
     // write encoded header
     await progressWriter.write(header);
@@ -555,6 +565,12 @@ const serializePly = async (splats: Splat[], serializeSettings: SerializeSetting
     // write the last (most likely partially filled) buf
     if (offset > 0) {
         await progressWriter.write(new Uint8Array(buf.buffer, 0, offset));
+    }
+
+    // write optional camera element
+    if (cameraSource) {
+        const cameraBuf = writeCameraBinary(cameraSource);
+        await progressWriter.write(cameraBuf);
     }
 
     await progressWriter.close();

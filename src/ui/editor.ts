@@ -28,6 +28,7 @@ import { VideoSettingsDialog } from './video-settings-dialog';
 import { ViewCube } from './view-cube';
 import { ViewPanel } from './view-panel';
 import { version } from '../../package.json';
+import { CameraPoseDialog } from './camera-pose-dialog';
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
@@ -226,6 +227,9 @@ class EditorUI {
         // dynamic export dialog
         const dynamicExportDialog = new DynamicExportDialog(events);
 
+        // camera pose dialog
+        const cameraPoseDialog = new CameraPoseDialog(events);
+
         topContainer.append(popup);
         topContainer.append(exportPopup);
         topContainer.append(publishSettingsDialog);
@@ -233,6 +237,7 @@ class EditorUI {
         topContainer.append(videoSettingsDialog);
         topContainer.append(dynamicParamsDialog);
         topContainer.append(dynamicExportDialog);
+        topContainer.append(cameraPoseDialog);
 
         appContainer.append(editorContainer);
         appContainer.append(topContainer);
@@ -383,6 +388,10 @@ class EditorUI {
         // dynamic export dialog
         events.function('showDynamicExportDialog', (params: any) => {
             return dynamicExportDialog.show(params);
+        });
+
+        events.function('showCameraPoseDialog', (initialJson: string, splatName: string) => {
+            return cameraPoseDialog.show(initialJson, splatName);
         });
 
         // spinner

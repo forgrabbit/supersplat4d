@@ -11,6 +11,7 @@ import { serializePly, serializePlyCompressed, SerializeSettings, serializeSplat
 import { serializeDynamicPly, serializeSog4d } from './serialize-dynamic';
 import type { DynamicExportOptions, DynamicExportParams } from './ui/dynamic-export-dialog';
 import { localize } from './ui/localization';
+import { applyDefaultCameraPose } from './camera-default';
 
 /**
  * Focus camera on dynamic splat (same logic as frame selection and gyroscope)
@@ -263,18 +264,36 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
                 json.sort(sorter).forEach((pose: any, i: number) => {
                     if (pose.hasOwnProperty('position') && pose.hasOwnProperty('rotation')) {
-                        const p = new Vec3(pose.position);
-                        const z = new Vec3(pose.rotation[0][2], pose.rotation[1][2], pose.rotation[2][2]);
+                        const position = pose.position;
+                        const rotation = pose.rotation;
+                        const fx = pose.fx;
+                        const fy = pose.fy;
+                        const width = pose.width;
+                        const height = pose.height;
 
-                        // Use fixed offset along Z-axis direction instead of variable dot product
-                        vec.copy(z).mulScalar(10).add(p);
+                        if (Array.isArray(position) && position.length === 3 &&
+                            Array.isArray(rotation) && rotation.length === 3) {
+                            const p = new Vec3(position[0], position[1], position[2]);
 
-                        events.fire('camera.addPose', {
-                            name: pose.img_name ?? `${file.filename}_${i}`,
-                            frame: i,
-                            position: new Vec3(-p.x, -p.y, p.z),
-                            target: new Vec3(-vec.x, -vec.y, vec.z)
-                        });
+                            // Apply SIBR-style column flip to match viewer convention
+                            const R = rotation;
+                            const orientation = [
+                                [R[0][0], -R[0][1], -R[0][2]],
+                                [R[1][0], -R[1][1], -R[1][2]],
+                                [R[2][0], -R[2][1], -R[2][2]]
+                            ];
+
+                            events.fire('camera.addPose', {
+                                name: pose.img_name ?? `${file.filename}_${i}`,
+                                frame: i,
+                                position: p,
+                                rotation: orientation,
+                                fx,
+                                fy,
+                                width,
+                                height
+                            });
+                        }
                     }
                 });
             }
@@ -288,6 +307,8 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
     const importFile = async (file: ImportFile, animationFrame: boolean) => {
         const importStartTime = performance.now();
         try {
+            const hadSplatsBefore = (scene.getElementsByType(ElementType.splat) as Splat[]).length > 0;
+
             const loadStartTime = performance.now();
             const model = await scene.assetLoader.load({
                 contents: file.contents,
@@ -327,12 +348,27 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             scene.add(model);
             const initTime = performance.now() - initStartTime;
             console.log(`⏱️  Dynamic splat initialization: ${initTime.toFixed(2)}ms`);
-            
-            // Find the dynamic splat from scene (should be the one we just added)
+
             const allSplats = scene.getElementsByType(ElementType.splat) as Splat[];
+
+            // Apply default camera pose only when the scene was previously empty
+            let defaultCameraApplied = false;
+            if (!hadSplatsBefore) {
+                const asSplat = model as Splat;
+                if (asSplat.defaultCameraPose) {
+                    try {
+                        applyDefaultCameraPose(events, asSplat.defaultCameraPose);
+                        defaultCameraApplied = true;
+                    } catch (error) {
+                        console.warn('Failed to apply default camera pose from PLY:', error);
+                    }
+                }
+            }
+
+            // Find the dynamic splat from scene (should be the one we just added)
             const dynamicSplat = allSplats.find((s: Splat) => s.isDynamic);
             
-            if (dynamicSplat) {
+            if (dynamicSplat && !defaultCameraApplied) {
                 // Wait for segment to load
                 // Check segmentCache directly since it's set when segment loads, even if activeIndices isn't set yet
                 const maxWaitTime = 2000;

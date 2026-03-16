@@ -19,6 +19,7 @@ import {
     Mat4,
     Picker,
     Plane,
+    Quat,
     Ray,
     RenderTarget,
     Texture,
@@ -33,6 +34,7 @@ import { GyroscopeController } from './gyroscope-controller';
 import { Serializer } from './serializer';
 import { Splat } from './splat';
 import { TweenValue } from './tween-value';
+import type { SibrCameraPose } from './camera-default';
 
 // calculate the forward vector given azimuth and elevation
 const calcForwardVec = (result: Vec3, azim: number, elev: number) => {
@@ -55,6 +57,9 @@ const vecb = new Vec3();
 const va = new Vec3();
 const m = new Mat4();
 const v4 = new Vec4();
+const workQuat = new Quat();
+const workForwardVec = new Vec3();
+const workUpVec = new Vec3();
 
 // modulo dealing with negative numbers
 const mod = (n: number, m: number) => ((n % m) + m) % m;
@@ -66,6 +71,7 @@ class Camera extends Element {
     focalPointTween = new TweenValue({ x: 0, y: 0.5, z: 0 });
     azimElevTween = new TweenValue({ azim: 30, elev: -15 });
     distanceTween = new TweenValue({ distance: 1 });
+    rollTween = new TweenValue({ roll: 0 });
 
     minElev = -90;
     maxElev = 90;
@@ -92,6 +98,15 @@ class Camera extends Element {
     renderOverlays = true;
 
     updateCameraUniforms: () => void;
+
+    // When enabled, camera will try to follow SIBR-style behavior more closely.
+    sibrExactMode = false;
+
+    // SIBR base pose (training camera); null when not in SIBR mode or not set.
+    baseSibrPose: SibrCameraPose | null = null;
+    deltaRot = new Quat(0, 0, 0, 1);
+    deltaPos = new Vec3(0, 0, 0);
+    deltaDolly = 0;
 
     constructor() {
         super(ElementType.camera);
@@ -200,6 +215,10 @@ class Camera extends Element {
         return this.distanceTween.target.distance;
     }
 
+    get roll() {
+        return this.rollTween.target.roll;
+    }
+
     setFocalPoint(point: Vec3, dampingFactorFactor: number = 1) {
         this.focalPointTween.goto(point, dampingFactorFactor * this.scene.config.controls.dampingFactor);
     }
@@ -231,6 +250,12 @@ class Camera extends Element {
 
         const t = this.distanceTween;
         t.goto({ distance }, dampingFactorFactor * controls.dampingFactor);
+    }
+
+    setRoll(roll: number, dampingFactorFactor: number = 1) {
+        const controls = this.scene.config.controls;
+        const t = this.rollTween;
+        t.goto({ roll }, dampingFactorFactor * controls.dampingFactor);
     }
 
     // Update FOV dynamically based on camera distance
@@ -416,6 +441,15 @@ class Camera extends Element {
 
         this.scene.events.on('scene.boundChanged', this.onBoundChanged, this);
 
+        // Allow external UI to toggle SIBR exact mode.
+        this.scene.events.on('camera.sibrExactMode', (enabled: boolean) => {
+            this.sibrExactMode = !!enabled;
+            // When entering SIBR mode, disable dynamic FOV tweaks by resetting FOV to base.
+            if (this.sibrExactMode) {
+                this.fov = this.baseFOV;
+            }
+        });
+
         // prepare camera-specific uniforms
         this.updateCameraUniforms = () => {
             const device = this.scene.graphicsDevice;
@@ -573,6 +607,28 @@ class Camera extends Element {
     }
 
     onUpdate(deltaTime: number) {
+        if (this.sibrExactMode) {
+            if (this.baseSibrPose) {
+                this.controller.update(deltaTime);
+                this.getCurrentSibrTransform(cameraPosition, workQuat);
+                this.entity.setLocalPosition(cameraPosition);
+                this.entity.setRotation(workQuat);
+                this.fov = this.baseSibrPose.fovYDeg;
+                this.fitClippingPlanes(this.entity.getLocalPosition(), this.entity.forward);
+                const { camera } = this.entity;
+                camera.orthoHeight = this.distanceTween.value.distance * this.sceneRadius / this.fovFactor * (this.fov / 90) * (camera.horizontalFov ? this.scene.targetSize.height / this.scene.targetSize.width : 1);
+                camera.camera._updateViewProjMat();
+            } else {
+                const pos = this.entity.getLocalPosition();
+                const forward = this.entity.forward;
+                this.fitClippingPlanes(pos, forward);
+                const { camera } = this.entity;
+                camera.orthoHeight = this.distanceTween.value.distance * this.sceneRadius / this.fovFactor * (this.fov / 90) * (camera.horizontalFov ? this.scene.targetSize.height / this.scene.targetSize.width : 1);
+                camera.camera._updateViewProjMat();
+            }
+            return;
+        }
+
         // controller update
         this.controller.update(deltaTime);
 
@@ -580,12 +636,16 @@ class Camera extends Element {
         this.focalPointTween.update(deltaTime);
         this.azimElevTween.update(deltaTime);
         this.distanceTween.update(deltaTime);
+        this.rollTween.update(deltaTime);
 
         const azimElev = this.azimElevTween.value;
         const distance = this.distanceTween.value;
+        const rollValue = this.rollTween.value;
 
-        // Update FOV based on distance (smooth adjustment)
-        this.updateDynamicFOV(distance.distance);
+        // Update FOV based on distance (smooth adjustment), unless in SIBR exact mode
+        if (!this.sibrExactMode) {
+            this.updateDynamicFOV(distance.distance);
+        }
 
         calcForwardVec(forwardVec, azimElev.azim, azimElev.elev);
         cameraPosition.copy(forwardVec);
@@ -593,7 +653,7 @@ class Camera extends Element {
         cameraPosition.add(this.focalPointTween.value);
 
         this.entity.setLocalPosition(cameraPosition);
-        this.entity.setLocalEulerAngles(azimElev.elev, azimElev.azim, 0);
+        this.entity.setLocalEulerAngles(azimElev.elev, azimElev.azim, rollValue.roll);
 
         this.fitClippingPlanes(this.entity.getLocalPosition(), this.entity.forward);
 
@@ -668,6 +728,194 @@ class Camera extends Element {
         const aspect = (width && height) ? this.entity.camera.horizontalFov ? height / width : width / height : 1;
         const fov = 2 * Math.atan(Math.tan(this.fov * math.DEG_TO_RAD * 0.5) * aspect);
         return Math.sin(fov * 0.5);
+    }
+
+    /**
+     * Set camera from a full pose matrix (position + rotation) and optional intrinsics.
+     * Rotation is expected to transform from world to camera space (as in training JSON).
+     */
+    setFromPoseMatrix(
+        position: Vec3,
+        rotation: number[][],
+        fx?: number,
+        fy?: number,
+        width?: number,
+        height?: number,
+        dampingFactorFactor: number = 1
+    ) {
+        // Debug: log raw input pose
+        // eslint-disable-next-line no-console
+        console.log('[Camera.setFromPoseMatrix] input', {
+            position: { x: position.x, y: position.y, z: position.z },
+            rotation,
+            fx,
+            fy,
+            width,
+            height,
+            dampingFactorFactor
+        });
+
+        // Build a quaternion from the provided rotation matrix.
+        // Treat rows as world axes expressed in camera space.
+        const m = new Mat4();
+        m.set([
+            rotation[0][0], rotation[0][1], rotation[0][2], 0,
+            rotation[1][0], rotation[1][1], rotation[1][2], 0,
+            rotation[2][0], rotation[2][1], rotation[2][2], 0,
+            0, 0, 0, 1
+        ]);
+        workQuat.setFromMat4(m);
+
+        // Inverse to get camera orientation in world space.
+        workQuat.invert();
+
+        // Extract forward (camera -Z) and up (camera +Y) vectors in world space.
+        workForwardVec.set(0, 0, -1);
+        workQuat.transformVector(workForwardVec, workForwardVec);
+
+        workUpVec.set(0, 1, 0);
+        workQuat.transformVector(workUpVec, workUpVec);
+
+        // Compute azimuth and elevation from forward vector.
+        const f = workForwardVec;
+        const azim = Math.atan2(-f.x, -f.z) * math.RAD_TO_DEG;
+        const elev = Math.asin(f.y) * math.RAD_TO_DEG;
+
+        // Compute roll from orientation relative to orbit frame.
+        // Orbit camera assumes yaw around Y then pitch around X.
+        const yaw = azim * math.DEG_TO_RAD;
+        const pitch = elev * math.DEG_TO_RAD;
+
+        const yawQuat = new Quat().setFromEulerAngles(0, azim, 0);
+        const pitchQuat = new Quat().setFromEulerAngles(elev, 0, 0);
+        const orbitQuat = new Quat();
+        orbitQuat.mul2(yawQuat, pitchQuat);
+
+        const invOrbitQuat = orbitQuat.clone().invert();
+        const rollQuat = new Quat();
+        rollQuat.mul2(invOrbitQuat, workQuat);
+
+        // Project rollQuat onto Z axis to get roll angle.
+        const zAxis = new Vec3(0, 0, 1);
+        rollQuat.transformVector(zAxis, zAxis);
+        const roll = Math.atan2(zAxis.y, zAxis.x) * math.RAD_TO_DEG;
+
+        // Debug: log decomposed orientation
+        // eslint-disable-next-line no-console
+        console.log('[Camera.setFromPoseMatrix] decomposed', {
+            forward: { x: f.x, y: f.y, z: f.z },
+            up: { x: workUpVec.x, y: workUpVec.y, z: workUpVec.z },
+            azim,
+            elev,
+            roll
+        });
+
+        // Update orbit parameters.
+        this.setAzimElev(azim, elev, dampingFactorFactor);
+        this.setRoll(roll, dampingFactorFactor);
+
+        // Set focal point to center of scene or existing focalPoint.
+        const focalPoint = this.scene.bound?.center ?? this.focalPointTween.target;
+        this.setFocalPoint(focalPoint, dampingFactorFactor);
+
+        // Update FOV based on intrinsics if provided.
+        if (fx && fy && height) {
+            const fovY = 2 * Math.atan(0.5 * height / fy) * math.RAD_TO_DEG;
+            this.fov = fovY;
+        }
+
+        // Use the provided camera position directly and aim at the scene center.
+        const sceneCenter = this.scene.bound?.center ?? this.focalPointTween.target;
+        const toCenter = new Vec3().sub2(sceneCenter, position);
+        const distanceWorld = toCenter.length();
+
+        // If the camera is exactly at the center (degenerate), fall back to radius-based distance.
+        const radius = this.scene.bound?.halfExtents.length() || this.sceneRadius;
+        const effectiveDistanceWorld = distanceWorld > 1e-6 ? distanceWorld : (radius || this.sceneRadius);
+
+        const distance = effectiveDistanceWorld / this.sceneRadius * this.fovFactor;
+
+        // Set focal point to scene center and distance so that the orbit camera position
+        // matches the input position as closely as possible.
+        this.setFocalPoint(sceneCenter, dampingFactorFactor);
+        this.setDistance(distance, dampingFactorFactor);
+
+        // Debug: log final camera parameters
+        // eslint-disable-next-line no-console
+        console.log('[Camera.setFromPoseMatrix] final', {
+            fov: this.fov,
+            sceneRadius: this.sceneRadius,
+            radius,
+            distanceWorld: effectiveDistanceWorld,
+            distance,
+            focalPoint: this.focalPointTween.target,
+            azim: this.azim,
+            elev: this.elevation,
+            roll: this.roll
+        });
+    }
+
+    /**
+     * Compute current SIBR transform from base pose + delta (rotation, position, dolly).
+     * R_final = base.worldRotation * deltaRot; P_final = base.worldPosition + deltaPos + forward * deltaDolly.
+     */
+    getCurrentSibrTransform(outPosition: Vec3, outRotation: Quat) {
+        const base = this.baseSibrPose;
+        if (!base) {
+            outPosition.copy(this.entity.getPosition());
+            outRotation.copy(this.entity.getRotation());
+            return;
+        }
+        outRotation.mul2(base.worldRotation, this.deltaRot);
+        workForwardVec.set(0, 0, -1);
+        outRotation.transformVector(workForwardVec, workForwardVec);
+        outPosition.copy(base.worldPosition).add(this.deltaPos).addScaled(workForwardVec, this.deltaDolly);
+    }
+
+    applySibrOrbitDelta(yawDelta: number, pitchDelta: number) {
+        if (!this.baseSibrPose) return;
+        this.getCurrentSibrTransform(vec, workQuat);
+        workUpVec.set(0, 1, 0);
+        workForwardVec.set(0, 0, -1);
+        workQuat.transformVector(workForwardVec, workForwardVec);
+        va.cross(workUpVec, workForwardVec).normalize();
+        const qYaw = new Quat().setFromAxisAngle(workUpVec, yawDelta * math.DEG_TO_RAD);
+        const qPitch = new Quat().setFromAxisAngle(va, pitchDelta * math.DEG_TO_RAD);
+        workQuat.mul2(qPitch, qYaw);
+        this.deltaRot.mul2(workQuat, this.deltaRot);
+    }
+
+    applySibrPanDelta(move: Vec3) {
+        if (!this.baseSibrPose) return;
+        this.deltaPos.add(move);
+    }
+
+    applySibrDollyDelta(amount: number) {
+        if (!this.baseSibrPose) return;
+        this.deltaDolly += amount;
+    }
+
+    resetSibrDelta() {
+        this.deltaRot.set(0, 0, 0, 1);
+        this.deltaPos.set(0, 0, 0);
+        this.deltaDolly = 0;
+    }
+
+    setFromSibrPose(pose: SibrCameraPose) {
+        this.sibrExactMode = true;
+        this.baseSibrPose = pose;
+        this.deltaRot.set(0, 0, 0, 1);
+        this.deltaPos.set(0, 0, 0);
+        this.deltaDolly = 0;
+
+        this.entity.setLocalPosition(pose.worldPosition);
+        this.entity.setRotation(pose.worldRotation);
+
+        this.fov = pose.fovYDeg;
+
+        const { camera } = this.entity;
+        camera.horizontalFov = false;
+        camera.camera._updateViewProjMat();
     }
 
     getRay(screenX: number, screenY: number, ray: Ray) {
@@ -830,7 +1078,8 @@ class Camera extends Element {
             elev: this.elevation,
             distance: this.distance,
             fov: this.fov,
-            tonemapping: this.tonemapping
+            tonemapping: this.tonemapping,
+            roll: this.roll
         };
     }
 
@@ -840,6 +1089,9 @@ class Camera extends Element {
         this.setDistance(settings.distance, 0);
         this.fov = settings.fov;
         this.tonemapping = settings.tonemapping;
+        if (typeof settings.roll === 'number') {
+            this.setRoll(settings.roll, 0);
+        }
     }
 
     // offscreen render mode

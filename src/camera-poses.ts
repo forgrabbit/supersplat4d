@@ -7,7 +7,12 @@ type Pose = {
     name: string,
     frame: number,
     position: Vec3,
-    target: Vec3
+    target?: Vec3,
+    rotation?: number[][],
+    fx?: number,
+    fy?: number,
+    width?: number,
+    height?: number
 };
 
 const registerCameraPosesEvents = (events: Events) => {

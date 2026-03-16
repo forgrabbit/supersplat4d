@@ -24,3 +24,6 @@ README_DEPLOYMENT_CN.md
 # Environment
 .env
 .env.local
+
+# Engine
+engine/

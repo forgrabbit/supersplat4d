@@ -28,6 +28,7 @@ import { vertexShader, fragmentShader, gsplatCenter } from './shaders/splat-shad
 import { State } from './splat-state';
 import { Transform } from './transform';
 import { TransformPalette } from './transform-palette';
+import { DefaultCameraPose } from './camera-default';
 
 const vec = new Vec3();
 const veca = new Vec3();
@@ -119,6 +120,9 @@ class Splat extends Element {
     _dyn_m2: Float32Array | null = null;
     _dyn_tc: Float32Array | null = null;
 
+    // Optional per-splat default camera pose (training-space extrinsics)
+    defaultCameraPose: DefaultCameraPose | null = null;
+
     constructor(asset: Asset, orientation: Vec3) {
         super(ElementType.splat);
         const initStartTime = performance.now();
@@ -142,6 +146,17 @@ class Splat extends Element {
             // Check for preloaded SOG4D segments
             if ((resource as any).sog4dSegments) {
                 this.sog4dSegments = (resource as any).sog4dSegments as Map<string, ArrayBuffer>;
+            }
+        }
+
+        // Optional default camera metadata injected by loaders
+        const fileAny = this.asset.file as any;
+        if (fileAny && fileAny.defaultCamera) {
+            this.defaultCameraPose = fileAny.defaultCamera as DefaultCameraPose;
+        } else {
+            const resourceAny = this.asset.resource as any;
+            if (resourceAny && resourceAny.defaultCamera) {
+                this.defaultCameraPose = resourceAny.defaultCamera as DefaultCameraPose;
             }
         }
 

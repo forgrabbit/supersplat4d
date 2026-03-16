@@ -1,7 +1,9 @@
 import { Asset, AssetRegistry, GSplatData, GSplatResource, PIXELFORMAT_R32F, PIXELFORMAT_RGBA32F } from 'playcanvas';
 
 import { getNextAssetId } from './asset-id-counter';
-import { AssetSource } from './asset-source';
+import { AssetSource, createReadSource } from './asset-source';
+import { DefaultCameraPose } from '../camera-default';
+import { parsePlyCamera } from './ply-camera';
 
 const uploadVisibilitySH = (resource: GSplatResource, splatData: GSplatData) => {
     const v0 = splatData.getProp('v_sh_0') as Float32Array | null;
@@ -80,17 +82,44 @@ const uploadVisibilitySH = (resource: GSplatResource, splatData: GSplatData) => 
 };
 
 // use the engine to load a gsplat asset (ply, compressed.ply, sog, sog-bundle)
-const loadGsplat = (assets: AssetRegistry, assetSource: AssetSource) => {
+const loadGsplat = async (assets: AssetRegistry, assetSource: AssetSource) => {
     const totalStartTime = performance.now();
     console.log('🔄 Loading PLY file...');
-    const contents = assetSource.contents && (assetSource.contents instanceof Response ? assetSource.contents : new Response(assetSource.contents));
+    const filename = assetSource.filename || assetSource.url || '';
+    const lowerFilename = filename.toLowerCase();
 
-    const file = {
+    let defaultCameraPose: DefaultCameraPose | null = null;
+
+    // For PLY files where we can obtain a byte stream, attempt to parse an optional camera element.
+    let contents: Response | null = null;
+    if (lowerFilename.endsWith('.ply')) {
+        try {
+            const source = await createReadSource(assetSource);
+            const rawData = await source.arrayBuffer();
+            defaultCameraPose = parsePlyCamera(rawData);
+            contents = new Response(rawData);
+        } catch (error) {
+            console.warn('Failed to inspect PLY for camera element:', error);
+            contents = assetSource.contents
+                ? (assetSource.contents instanceof Response ? assetSource.contents : new Response(assetSource.contents))
+                : null;
+        }
+    } else {
+        contents = assetSource.contents
+            ? (assetSource.contents instanceof Response ? assetSource.contents : new Response(assetSource.contents))
+            : null;
+    }
+
+    const file: any = {
         // we must construct a unique url if contents is provided
         url: contents ? `local-asset-${getNextAssetId()}` : assetSource.url ?? assetSource.filename,
         filename: assetSource.filename,
         contents
     };
+
+    if (defaultCameraPose) {
+        file.defaultCamera = defaultCameraPose;
+    }
 
     const data = {
         // decompress data on load

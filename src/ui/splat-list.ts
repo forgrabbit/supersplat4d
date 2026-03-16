@@ -7,6 +7,8 @@ import { Splat } from '../splat';
 import deleteSvg from './svg/delete.svg';
 import hiddenSvg from './svg/hidden.svg';
 import shownSvg from './svg/shown.svg';
+import cameraResetSvg from './svg/camera-reset.svg';
+import { applyDefaultCameraPose, buildCameraJsonFromPose, parseCameraJson } from '../camera-default';
 
 const createSvg = (svgString: string) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
@@ -46,6 +48,11 @@ class SplatItem extends Container {
             hidden: true
         });
 
+        const cameraButton = new PcuiElement({
+            dom: createSvg(cameraResetSvg),
+            class: 'splat-item-camera'
+        });
+
         const remove = new PcuiElement({
             dom: createSvg(deleteSvg),
             class: 'splat-item-delete'
@@ -54,6 +61,7 @@ class SplatItem extends Container {
         this.append(text);
         this.append(visible);
         this.append(invisible);
+        this.append(cameraButton);
         this.append(remove);
 
         this.getName = () => {
@@ -108,6 +116,11 @@ class SplatItem extends Container {
             this.emit('removeClicked', this);
         };
 
+        const handleCamera = (event: MouseEvent) => {
+            event.stopPropagation();
+            this.emit('cameraClicked', this);
+        };
+
         // rename on double click
         text.dom.addEventListener('dblclick', (event: MouseEvent) => {
             event.stopPropagation();
@@ -130,11 +143,13 @@ class SplatItem extends Container {
         // handle clicks
         visible.dom.addEventListener('click', toggleVisible);
         invisible.dom.addEventListener('click', toggleVisible);
+        cameraButton.dom.addEventListener('click', handleCamera);
         remove.dom.addEventListener('click', handleRemove);
 
         this.destroy = () => {
             visible.dom.removeEventListener('click', toggleVisible);
             invisible.dom.removeEventListener('click', toggleVisible);
+            cameraButton.dom.removeEventListener('click', handleCamera);
             remove.dom.removeEventListener('click', handleRemove);
         };
     }
@@ -267,6 +282,62 @@ class SplatList extends Container {
                 splat.destroy();
             }
         });
+
+        this.on('cameraClicked', async (item: SplatItem) => {
+            let splat: Splat | undefined;
+            for (const [key, value] of items) {
+                if (item === value) {
+                    splat = key;
+                    break;
+                }
+            }
+
+            if (!splat) {
+                return;
+            }
+
+            const existingPose = splat.defaultCameraPose;
+            const jsonObject = existingPose ?
+                buildCameraJsonFromPose(existingPose, splat.name) :
+                [{
+                    id: 0,
+                    img_name: splat.name,
+                    width: 0,
+                    height: 0,
+                    position: [0, 0, 0],
+                    rotation: [
+                        [1, 0, 0],
+                        [0, 1, 0],
+                        [0, 0, 1]
+                    ],
+                    fy: 0,
+                    fx: 0
+                }];
+
+            const initialJson = JSON.stringify(jsonObject, null, 2);
+            const result = await events.invoke('showCameraPoseDialog', initialJson, splat.name) as { json: string, sibrExact: boolean } | null;
+            if (result === null) {
+                return;
+            }
+
+            try {
+                const pose = parseCameraJson(result.json);
+                splat.defaultCameraPose = pose;
+
+                if (result.sibrExact) {
+                    // Enable SIBR exact mode on the camera when applying this pose.
+                    events.fire('camera.sibrExactMode', true);
+                }
+
+                applyDefaultCameraPose(events, pose);
+            } catch (error) {
+                await events.invoke('showPopup', {
+                    type: 'error',
+                    header: 'Invalid Camera JSON',
+                    message: `${(error as Error).message}`
+                });
+            }
+        });
     }
 
     protected _onAppendChild(element: PcuiElement): void {
@@ -280,6 +351,10 @@ class SplatList extends Container {
             element.on('removeClicked', () => {
                 this.emit('removeClicked', element);
             });
+
+            element.on('cameraClicked', () => {
+                this.emit('cameraClicked', element);
+            });
         }
     }
 
@@ -287,6 +362,7 @@ class SplatList extends Container {
         if (element instanceof SplatItem) {
             element.unbind('click');
             element.unbind('removeClicked');
+            element.unbind('cameraClicked');
         }
 
         super._onRemoveChild(element);

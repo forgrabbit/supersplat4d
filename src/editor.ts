@@ -853,6 +853,31 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         scene.camera.setPose(pose.position, pose.target, speed);
     });
 
+    events.on('camera.setFromPoseMatrix', (payload: {
+        position: Vec3;
+        rotation: number[][];
+        fx?: number;
+        fy?: number;
+        width?: number;
+        height?: number;
+        speed?: number;
+    }) => {
+        const { position, rotation, fx, fy, width, height, speed } = payload;
+        scene.camera.setFromPoseMatrix(position, rotation, fx, fy, width, height, speed ?? 1);
+    });
+
+    events.function('camera.isSibrExactMode', () => {
+        return scene.camera.sibrExactMode;
+    });
+
+    events.on('camera.setFromSibrPose', (pose: any) => {
+        scene.camera.setFromSibrPose(pose);
+    });
+
+    events.on('camera.resetSibrView', () => {
+        scene.camera.resetSibrDelta();
+    });
+
     // hack: fire events to initialize UI
     events.fire('camera.fov', scene.camera.fov);
     events.fire('camera.overlay', cameraOverlay);
