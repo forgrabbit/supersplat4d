@@ -231,7 +231,8 @@ class Scene {
             { name: 'VRAM', stats: ['vram.tex'], decimalPlaces: 1, multiplier: 1 / (1024 * 1024), unitsName: 'MB', watermark: 1024 },
             { name: 'GSplats', stats: ['frame.gsplats'], decimalPlaces: 3, multiplier: 1 / 1000000, unitsName: 'M', watermark: 10 },
             { name: 'Sort', stats: ['frame.sortTime'], decimalPlaces: 1, unitsName: 'ms', watermark: 5 },
-            { name: 'Render', stats: ['frame.renderTime'], decimalPlaces: 1, unitsName: 'ms', watermark: 16 }
+            { name: 'Render', stats: ['frame.renderTime'], decimalPlaces: 1, unitsName: 'ms', watermark: 16 },
+            { name: 'FPS', stats: ['frame.fps'], decimalPlaces: 1, watermark: 60 }
         );
         this.miniStats = new MiniStats(this.app, msOptions as never);
 
