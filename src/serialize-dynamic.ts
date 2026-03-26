@@ -211,14 +211,15 @@ const serializeDynamicPly = async (
         throw new Error('No visible splats in the selected time range');
     }
     
-    // Define property order to match standard PLY format
-    // Order: x y z trbf_center trbf_scale nx ny nz motion_0 motion_1 motion_2 f_dc_0 f_dc_1 f_dc_2 opacity scale_0 scale_1 scale_2 rot_0 rot_1 rot_2 rot_3
-    const propertyOrder = [
+    const prefixOrder = [
         'x', 'y', 'z',
         'trbf_center', 'trbf_scale',
         'nx', 'ny', 'nz',
         'motion_0', 'motion_1', 'motion_2',
-        'f_dc_0', 'f_dc_1', 'f_dc_2',
+        'f_dc_0', 'f_dc_1', 'f_dc_2'
+    ];
+
+    const tailOrder = [
         'opacity',
         'scale_0', 'scale_1', 'scale_2',
         'rot_0', 'rot_1', 'rot_2', 'rot_3'
@@ -240,20 +241,42 @@ const serializeDynamicPly = async (
         propMap.set(prop.name, prop);
     }
     
-    // Build props array in the desired order, only including properties that exist
-    const props: any[] = [];
-    for (const propName of propertyOrder) {
-        const prop = propMap.get(propName);
-        if (prop) {
-            props.push(prop);
-        }
+    const orderedPropNames: string[] = [];
+
+    // 1) Fixed prefix order
+    for (const name of prefixOrder) {
+        if (propMap.has(name)) orderedPropNames.push(name);
     }
-    
-    // Add any remaining properties that weren't in the standard order (e.g., f_rest_*)
+
+    // 2) If spherical harmonics residuals exist, place them immediately after f_dc_*
+    const fRestNames = allProps
+        .map((p: any) => p.name)
+        .filter((name: string) => /^f_rest_\d+$/.test(name))
+        .sort((a: string, b: string) => parseInt(a.slice(7), 10) - parseInt(b.slice(7), 10));
+
+    for (const name of fRestNames) {
+        if (propMap.has(name)) orderedPropNames.push(name);
+    }
+
+    // 3) Preserve remaining properties in their original order, excluding tail group
+    const tailSet = new Set(tailOrder);
     for (const prop of allProps) {
-        if (!propertyOrder.includes(prop.name)) {
-            props.push(prop);
-        }
+        const name = prop.name;
+        if (orderedPropNames.includes(name)) continue;
+        if (tailSet.has(name)) continue;
+        orderedPropNames.push(name);
+    }
+
+    // 4) Fixed tail order
+    for (const name of tailOrder) {
+        if (propMap.has(name)) orderedPropNames.push(name);
+    }
+
+    // Build props array in the desired order
+    const props: any[] = [];
+    for (const name of orderedPropNames) {
+        const prop = propMap.get(name);
+        if (prop) props.push(prop);
     }
     
     // Build header with cfg_args
