@@ -159,7 +159,7 @@ class SplatsTransformHandler implements TransformHandler {
 
         // TODO: consider moving this to update() function above so splats are sorted correctly
         // for render during drag (which is slower).
-        splat.updatePositions();
+        void splat.updatePositions();
         splat.selectionAlpha = 1;
         splat.scene.outline.enabled = true;
         splat.scene.underlay.enabled = true;

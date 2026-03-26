@@ -24,3 +24,5 @@ README_DEPLOYMENT_CN.md
 # Environment
 .env
 .env.local
+
+example/

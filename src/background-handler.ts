@@ -179,8 +179,7 @@ const registerBackgroundEvents = (scene: Scene, events: Events) => {
             await importCubemapFromFile(file, false);
         } catch (error) {
             if (error instanceof Error && error.name !== 'AbortError') {
-                console.error('Failed to import background from file:', error);
-                throw error;
+                console.warn('Failed to import background from file; continuing without background:', error);
             }
         }
     });

@@ -32,6 +32,7 @@ import { ToolManager } from './tools/tool-manager';
 import { registerTransformHandlerEvents } from './transform-handler';
 import { EditorUI } from './ui/editor';
 import { localizeInit } from './ui/localization';
+import { getGraphicsBackendName, isWebGPU } from './utils/graphics-backend';
 
 declare global {
     interface LaunchParams {
@@ -123,14 +124,28 @@ const main = async () => {
     const editorUI = new EditorUI(events);
 
     // create the graphics device
+    const query = new URLSearchParams(window.location.search.slice(1));
+    const glslangUrl = query.get('glslangUrl') ??
+        'https://cdn.jsdelivr.net/npm/@webgpu/glslang@0.0.15/dist/web-devel/glslang.js';
+    const twgslUrl = query.get('twgslUrl') ??
+        'https://cdn.jsdelivr.net/npm/@webgpu/twgsl@0.0.15/dist/twgsl.js';
     const graphicsDevice = await createGraphicsDevice(editorUI.canvas, {
-        deviceTypes: ['webgl2'],
+        deviceTypes: ['webgpu', 'webgl2'],
         antialias: false,
         depth: false,
         stencil: false,
         xrCompatible: false,
-        powerPreference: 'high-performance'
+        powerPreference: 'high-performance',
+        glslangUrl,
+        twgslUrl
     });
+
+    const backend = getGraphicsBackendName(graphicsDevice);
+    const webgpuActive = isWebGPU(graphicsDevice);
+    console.info(`[graphics] initialized backend=${backend}, isWebGPU=${webgpuActive}`);
+    if (!webgpuActive) {
+        console.warn('[graphics] WebGPU is not active; using WebGL2 backend.');
+    }
 
     const overrides = [
         getURLArgs()

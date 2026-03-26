@@ -345,8 +345,8 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         });
     });
 
-    const intersectCenters = (splat: Splat, op: 'add'|'remove'|'set', options: any) => {
-        const data = scene.dataProcessor.intersect(options, splat);
+    const intersectCenters = async (splat: Splat, op: 'add'|'remove'|'set', options: any) => {
+        const data = await scene.dataProcessor.intersect(options, splat);
         const filter = (i: number) => {
             if (data[i] !== 255) {
                 return false;
@@ -357,28 +357,28 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         events.fire('edit.add', new SelectOp(splat, op, filter));
     };
 
-    events.on('select.bySphere', (op: 'add'|'remove'|'set', sphere: number[]) => {
+    events.on('select.bySphere', async (op: 'add'|'remove'|'set', sphere: number[]) => {
         selectedSplats().forEach((splat) => {
-            intersectCenters(splat, op, {
+            void intersectCenters(splat, op, {
                 sphere: { x: sphere[0], y: sphere[1], z: sphere[2], radius: sphere[3] }
             });
         });
     });
 
-    events.on('select.byBox', (op: 'add'|'remove'|'set', box: number[]) => {
+    events.on('select.byBox', async (op: 'add'|'remove'|'set', box: number[]) => {
         selectedSplats().forEach((splat) => {
-            intersectCenters(splat, op, {
+            void intersectCenters(splat, op, {
                 box: { x: box[0], y: box[1], z: box[2], lenx: box[3], leny: box[4], lenz: box[5] }
             });
         });
     });
 
-    events.on('select.rect', (op: 'add'|'remove'|'set', rect: any) => {
+    events.on('select.rect', async (op: 'add'|'remove'|'set', rect: any) => {
         const mode = events.invoke('camera.mode');
 
         selectedSplats().forEach((splat) => {
             if (mode === 'centers') {
-                intersectCenters(splat, op, {
+                void intersectCenters(splat, op, {
                     rect: { x1: rect.start.x, y1: rect.start.y, x2: rect.end.x, y2: rect.end.y }
                 });
             } else if (mode === 'rings') {
@@ -408,7 +408,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
     let maskTexture: Texture = null;
 
-    events.on('select.byMask', (op: 'add'|'remove'|'set', canvas: HTMLCanvasElement, context: CanvasRenderingContext2D) => {
+    events.on('select.byMask', async (op: 'add'|'remove'|'set', canvas: HTMLCanvasElement, context: CanvasRenderingContext2D) => {
         const mode = events.invoke('camera.mode');
 
         selectedSplats().forEach((splat) => {
@@ -422,7 +422,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 }
                 maskTexture.setSource(canvas);
 
-                intersectCenters(splat, op, {
+                void intersectCenters(splat, op, {
                     mask: maskTexture
                 });
             } else if (mode === 'rings') {

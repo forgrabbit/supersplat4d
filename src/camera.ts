@@ -15,16 +15,20 @@ import {
     TONEMAP_LINEAR,
     TONEMAP_NEUTRAL,
     BoundingBox,
+    BlendState,
     Entity,
     Mat4,
     Picker,
+    QuadRender,
     Plane,
     Ray,
     RenderTarget,
+    SEMANTIC_POSITION,
+    Shader,
+    ShaderUtils,
     Texture,
     Vec3,
-    Vec4,
-    WebglGraphicsDevice
+    Vec4
 } from 'playcanvas';
 
 import { PointerController } from './controllers';
@@ -33,6 +37,7 @@ import { GyroscopeController } from './gyroscope-controller';
 import { Serializer } from './serializer';
 import { Splat } from './splat';
 import { TweenValue } from './tween-value';
+import { assertRawReadPixelsSupported, isWebGPU } from './utils/graphics-backend';
 
 // calculate the forward vector given azimuth and elevation
 const calcForwardVec = (result: Vec3, azim: number, elev: number) => {
@@ -92,6 +97,8 @@ class Camera extends Element {
     renderOverlays = true;
 
     updateCameraUniforms: () => void;
+    finalBlitShader: Shader;
+    finalBlitQuad: QuadRender;
 
     constructor() {
         super(ElementType.camera);
@@ -416,6 +423,29 @@ class Camera extends Element {
 
         this.scene.events.on('scene.boundChanged', this.onBoundChanged, this);
 
+        this.finalBlitShader = ShaderUtils.createShader(this.scene.graphicsDevice, {
+            uniqueName: 'camera-final-blit',
+            attributes: {
+                vertex_position: SEMANTIC_POSITION
+            },
+            vertexGLSL: `
+                attribute vec2 vertex_position;
+                varying vec2 uv0;
+                void main(void) {
+                    uv0 = vertex_position * 0.5 + 0.5;
+                    gl_Position = vec4(vertex_position, 0.0, 1.0);
+                }
+            `,
+            fragmentGLSL: `
+                varying vec2 uv0;
+                uniform sampler2D blitTexture;
+                void main(void) {
+                    gl_FragColor = texture2D(blitTexture, uv0);
+                }
+            `
+        });
+        this.finalBlitQuad = new QuadRender(this.finalBlitShader);
+
         // prepare camera-specific uniforms
         this.updateCameraUniforms = () => {
             const device = this.scene.graphicsDevice;
@@ -489,6 +519,9 @@ class Camera extends Element {
         this.picker = null;
 
         this.scene.events.off('scene.boundChanged', this.onBoundChanged, this);
+
+        this.finalBlitQuad?.destroy();
+        this.finalBlitQuad = null;
     }
 
     // handle the scene's bound changing. the camera must be configured to render
@@ -626,7 +659,7 @@ class Camera extends Element {
     }
 
     onPostRender() {
-        const device = this.scene.graphicsDevice as WebglGraphicsDevice;
+        const device = this.scene.graphicsDevice;
         const renderTarget = this.entity.camera.renderTarget;
 
         // resolve msaa buffer
@@ -636,7 +669,16 @@ class Camera extends Element {
 
         // copy render target
         if (!this.suppressFinalBlit) {
-            device.copyRenderTarget(renderTarget, null, true, false);
+            if (isWebGPU(device)) {
+                device.setBlendState(BlendState.NOBLEND);
+                device.scope.resolve('blitTexture').setValue(renderTarget.colorBuffer);
+                (device as any).setRenderTarget(null);
+                (device as any).updateBegin();
+                this.finalBlitQuad.render();
+                (device as any).updateEnd();
+            } else {
+                (device as any).copyRenderTarget(renderTarget, null, true, false);
+            }
         }
     }
 
@@ -797,7 +839,8 @@ class Camera extends Element {
     }
 
     pickRect(x: number, y: number, width: number, height: number) {
-        const device = this.scene.graphicsDevice as WebglGraphicsDevice;
+        const device = this.scene.graphicsDevice as any;
+        assertRawReadPixelsSupported(this.scene.graphicsDevice, 'camera.pickRect');
         const pixels = new Uint8Array(width * height * 4);
 
         // read pixels

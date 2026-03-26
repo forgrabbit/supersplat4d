@@ -61,7 +61,7 @@ class StateOp {
             const idx = this.indices[i];
             state[idx] = this.doIt(state[idx]);
         }
-        this.splat.updateState(this.updateFlags);
+        void this.splat.updateState(this.updateFlags);
     }
 
     undo() {
@@ -71,7 +71,7 @@ class StateOp {
             const idx = this.indices[i];
             state[idx] = this.undoIt(state[idx]);
         }
-        this.splat.updateState(this.updateFlags);
+        void this.splat.updateState(this.updateFlags);
     }
 
     destroy() {
@@ -263,7 +263,7 @@ class SplatsTransformOp {
         });
 
         splat.makeSelectionBoundDirty();
-        splat.updatePositions();
+        void splat.updatePositions();
     }
 
     undo() {
@@ -289,7 +289,7 @@ class SplatsTransformOp {
         splat.transformPalette.free(paletteMap.size);
 
         splat.makeSelectionBoundDirty();
-        splat.updatePositions();
+        void splat.updatePositions();
     }
 
     destroy() {

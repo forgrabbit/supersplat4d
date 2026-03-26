@@ -15,6 +15,7 @@ import {
 import { Element, ElementType } from './element';
 import { vertexShader, fragmentShader } from './shaders/outline-shader';
 import { Splat } from './splat';
+import { isWebGPU } from './utils/graphics-backend';
 
 class Outline extends Element {
     entity: Entity;
@@ -22,6 +23,7 @@ class Outline extends Element {
     quadRender: QuadRender;
     enabled = true;
     clr = new Color(1, 1, 1, 0.5);
+    warnedWebgpuUnsupported = false;
 
     constructor() {
         super(ElementType.other);
@@ -70,6 +72,14 @@ class Outline extends Element {
         // apply the outline texture to the display before gizmos render
         this.entity.camera.on('postRenderLayer', (layer: Layer, transparent: boolean) => {
             if (!this.entity.enabled || layer !== this.scene.overlayLayer || !transparent) {
+                return;
+            }
+
+            if (isWebGPU(device)) {
+                if (!this.warnedWebgpuUnsupported) {
+                    this.warnedWebgpuUnsupported = true;
+                    console.warn('[outline] WebGPU backend does not support legacy blit path; outline pass is skipped.');
+                }
                 return;
             }
 

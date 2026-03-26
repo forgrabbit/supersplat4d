@@ -596,7 +596,7 @@ class Splat extends Element {
     }
 
 
-    updateState(changedState = State.selected) {
+    async updateState(changedState = State.selected) {
         const state = this.splatData.getProp('state') as Uint8Array;
 
         // write state data to gpu texture
@@ -628,15 +628,17 @@ class Splat extends Element {
 
         // handle splats being added or removed
         if (changedState & State.deleted) {
-            this.updateSorting();
+            await this.updateSorting();
+        } else {
+            await this.updateLocalBounds();
         }
 
         this.scene.forceRender = true;
         this.scene.events.fire('splat.stateChanged', this);
     }
 
-    updatePositions() {
-        const data = this.scene.dataProcessor.calcPositions(this);
+    async updatePositions() {
+        const data = await this.scene.dataProcessor.calcPositions(this);
 
         // update the splat centers which are used for render-time sorting
         const state = this.splatData.getProp('state') as Uint8Array;
@@ -650,16 +652,14 @@ class Splat extends Element {
             }
         }
 
-        this.updateSorting();
+        await this.updateSorting();
 
         this.scene.forceRender = true;
         this.scene.events.fire('splat.positionsChanged', this);
     }
 
-    updateSorting() {
+    async updateSorting() {
         const state = this.splatData.getProp('state') as Uint8Array;
-
-        this.makeLocalBoundDirty();
 
         let mapping;
 
@@ -676,6 +676,7 @@ class Splat extends Element {
 
         // update sorting instance
         this.entity.gsplat.instance.sorter.setMapping(mapping);
+        await this.updateLocalBounds();
     }
 
     get worldTransform() {
@@ -746,7 +747,7 @@ class Splat extends Element {
         }
 
         // we must update state in case the state data was loaded from ply
-        this.updateState();
+        void this.updateState();
 
         // Initialize dynamic gaussian: load first segment and set initial time
         if (this.isDynamic && this.dynManifest) {
@@ -1131,7 +1132,7 @@ class Splat extends Element {
             entity.setLocalScale(scale);
         }
 
-        this.makeWorldBoundDirty();
+        this.updateWorldBound();
 
         this.scene.events.fire('splat.moved', this);
     }
@@ -1151,25 +1152,36 @@ class Splat extends Element {
         this.scene.boundDirty = true;
     }
 
-    // get the selection bound
-    get selectionBound() {
-        const selectionBound = this.selectionBoundStorage;
+    async updateLocalBounds() {
+        if (!this.selectionBoundDirty && !this.localBoundDirty) {
+            return;
+        }
+
         if (this.selectionBoundDirty) {
-            this.scene.dataProcessor.calcBound(this, selectionBound, true);
+            await this.scene.dataProcessor.calcBound(this, this.selectionBoundStorage, true);
             this.selectionBoundDirty = false;
         }
-        return selectionBound;
+        if (this.localBoundDirty) {
+            await this.scene.dataProcessor.calcBound(this, this.localBoundStorage, false);
+            this.localBoundDirty = false;
+        }
+        this.updateWorldBound();
+    }
+
+    private updateWorldBound() {
+        this.worldBoundStorage.setFromTransformedAabb(this.localBoundStorage, this.entity.getWorldTransform());
+        this.worldBoundDirty = false;
+        this.scene.boundDirty = true;
+    }
+
+    // get the selection bound
+    get selectionBound() {
+        return this.selectionBoundStorage;
     }
 
     // get local space bound
     get localBound() {
-        const localBound = this.localBoundStorage;
-        if (this.localBoundDirty) {
-            this.scene.dataProcessor.calcBound(this, localBound, false);
-            this.localBoundDirty = false;
-            this.entity.getWorldTransform().transformPoint(localBound.center, vec);
-        }
-        return localBound;
+        return this.localBoundStorage;
     }
 
     // get world space bound
@@ -1177,7 +1189,7 @@ class Splat extends Element {
         const worldBound = this.worldBoundStorage;
         if (this.worldBoundDirty) {
             // calculate meshinstance aabb (transformed local bound)
-            worldBound.setFromTransformedAabb(this.localBound, this.entity.getWorldTransform());
+            worldBound.setFromTransformedAabb(this.localBoundStorage, this.entity.getWorldTransform());
 
             // flag scene bound as dirty
             this.worldBoundDirty = false;

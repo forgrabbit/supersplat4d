@@ -15,12 +15,14 @@ import {
 
 import { Element, ElementType } from './element';
 import { vertexShader, fragmentShader } from './shaders/blit-shader';
+import { isWebGPU } from './utils/graphics-backend';
 
 class Underlay extends Element {
     entity: Entity;
     shader: Shader;
     quadRender: QuadRender;
     enabled = true;
+    warnedWebgpuUnsupported = false;
 
     constructor() {
         super(ElementType.other);
@@ -56,6 +58,14 @@ class Underlay extends Element {
 
         this.entity.camera.on('postRenderLayer', (layer: Layer, transparent: boolean) => {
             if (!this.entity.enabled || layer !== this.scene.overlayLayer || !transparent) {
+                return;
+            }
+
+            if (isWebGPU(device)) {
+                if (!this.warnedWebgpuUnsupported) {
+                    this.warnedWebgpuUnsupported = true;
+                    console.warn('[underlay] WebGPU backend does not support legacy blit path; underlay pass is skipped.');
+                }
                 return;
             }
 

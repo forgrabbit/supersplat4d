@@ -13,8 +13,8 @@ import {
     Shader,
     ShaderUtils,
     Texture,
+    Vec4,
     Vec3,
-    WebglGraphicsDevice,
     BlendState
 } from 'playcanvas';
 
@@ -22,6 +22,8 @@ import { vertexShader as boundVS, fragmentShader as boundFS } from './shaders/bo
 import { vertexShader as intersectionVS, fragmentShader as intersectionFS } from './shaders/intersection-shader';
 import { vertexShader as positionVS, fragmentShader as positionFS } from './shaders/position-shader';
 import { Splat } from './splat';
+import { State } from './splat-state';
+import { supportsGLInternalFormatRead, isWebGPU } from './utils/graphics-backend';
 
 type MaskOptions = {
     mask: Texture;
@@ -41,6 +43,9 @@ type BoxOptions = {
 
 const v1 = new Vec3();
 const v2 = new Vec3();
+const p = new Vec4();
+const t = new Mat4();
+let loggedCpuFallback = false;
 
 const resolve = (scope: ScopeSpace, values: any) => {
     for (const key in values) {
@@ -80,6 +85,7 @@ class DataProcessor {
     viewProjectionMat = new Mat4();
     splatParams = new Int32Array(3);
     copyShader: Shader;
+    processingPromise: Promise<void> = Promise.resolve();
 
     getIntersectResources: (width: number, numSplats: number) => IntersectResources;
     getBoundResources: (splatTextureWidth: number) => BoundResources;
@@ -265,8 +271,32 @@ class DataProcessor {
         })();
     }
 
+    private enqueue<T>(fn: () => Promise<T>): Promise<T> {
+        const result = this.processingPromise.then(fn);
+        this.processingPromise = result.then((): void => undefined, (): void => undefined);
+        return result;
+    }
+
+    private calcPositionsCpu(splat: Splat, out: Float32Array) {
+        const x = splat.splatData.getProp('x') as Float32Array;
+        const y = splat.splatData.getProp('y') as Float32Array;
+        const z = splat.splatData.getProp('z') as Float32Array;
+        const indices = splat.transformTexture.lock() as Uint16Array;
+        for (let i = 0; i < splat.splatData.numSplats; i++) {
+            splat.transformPalette.getTransform(indices[i], t);
+            p.set(x[i], y[i], z[i], 1);
+            t.transformVec4(p, p);
+            out[i * 4 + 0] = p.x;
+            out[i * 4 + 1] = p.y;
+            out[i * 4 + 2] = p.z;
+            out[i * 4 + 3] = p.w;
+        }
+        splat.transformTexture.unlock();
+    }
+
     // calculate the intersection of a mask canvas with splat centers
     intersect(options: MaskOptions | RectOptions | SphereOptions | BoxOptions, splat: Splat) {
+        return this.enqueue(async () => {
         const { device } = this;
         const { scope } = device;
 
@@ -372,15 +402,19 @@ class DataProcessor {
         device.setBlendState(BlendState.NOBLEND);
         drawQuadWithShader(device, resources.renderTarget, resources.shader);
 
-        const glDevice = device as WebglGraphicsDevice;
-        glDevice.readPixels(0, 0, resources.texture.width, resources.texture.height, resources.data);
-
-        return resources.data;
+        const data = await resources.texture.read(0, 0, resources.texture.width, resources.texture.height, {
+            renderTarget: resources.renderTarget,
+            data: resources.data,
+            immediate: false
+        });
+        return data as Uint8Array;
+        });
     }
 
     // use gpu to calculate either bound of the currently selected splats or the bound of
     // all visible splats
     calcBound(splat: Splat, boundingBox: BoundingBox, onlySelected: boolean) {
+        return this.enqueue(async () => {
         const device = splat.scene.graphicsDevice;
         const { scope } = device;
 
@@ -409,19 +443,49 @@ class DataProcessor {
             mode: onlySelected ? 0 : 1
         });
 
-        const glDevice = device as WebglGraphicsDevice;
+        if (!supportsGLInternalFormatRead(device)) {
+            const positions = new Float32Array(transformA.width * transformA.height * 4);
+            this.calcPositionsCpu(splat, positions);
+            const state = splat.splatData.getProp('state') as Uint8Array;
+            v1.set(Infinity, Infinity, Infinity);
+            v2.set(-Infinity, -Infinity, -Infinity);
+            for (let i = 0; i < splat.splatData.numSplats; i++) {
+                const s = state[i];
+                const include = onlySelected ? s === State.selected : (s & State.deleted) === 0;
+                if (!include) {
+                    continue;
+                }
+                const x = positions[i * 4];
+                const y = positions[i * 4 + 1];
+                const z = positions[i * 4 + 2];
+                if (isFinite(x)) v1.x = Math.min(v1.x, x);
+                if (isFinite(y)) v1.y = Math.min(v1.y, y);
+                if (isFinite(z)) v1.z = Math.min(v1.z, z);
+                if (isFinite(x)) v2.x = Math.max(v2.x, x);
+                if (isFinite(y)) v2.y = Math.max(v2.y, y);
+                if (isFinite(z)) v2.z = Math.max(v2.z, z);
+            }
+            boundingBox.setMinMax(v1, v2);
+            return;
+        }
 
         device.setBlendState(BlendState.NOBLEND);
         drawQuadWithShader(device, resources.renderTarget, resources.shader);
-        glDevice.gl.readPixels(0, 0, transformA.width, 1, resources.minTexture.impl._glFormat, resources.minTexture.impl._glPixelType, resources.minData);
 
-        glDevice.setRenderTarget(resources.maxRenderTarget);
-        glDevice.updateBegin();
-        glDevice.gl.readPixels(0, 0, transformA.width, 1, resources.maxTexture.impl._glFormat, resources.maxTexture.impl._glPixelType, resources.maxData);
-        glDevice.updateEnd();
+        const [minData, maxData] = await Promise.all([
+            resources.minTexture.read(0, 0, transformA.width, 1, {
+                renderTarget: resources.minRenderTarget,
+                data: resources.minData,
+                immediate: false
+            }),
+            resources.maxTexture.read(0, 0, transformA.width, 1, {
+                renderTarget: resources.maxRenderTarget,
+                data: resources.maxData,
+                immediate: false
+            })
+        ]);
 
         // resolve mins/maxs
-        const { minData, maxData } = resources;
         v1.set(Infinity, Infinity, Infinity);
         v2.set(-Infinity, -Infinity, -Infinity);
 
@@ -442,10 +506,12 @@ class DataProcessor {
         }
 
         boundingBox.setMinMax(v1, v2);
+        });
     }
 
     // calculate world-space splat positions
     calcPositions(splat: Splat) {
+        return this.enqueue(async () => {
         const { device } = this;
         const { scope } = device;
 
@@ -467,20 +533,27 @@ class DataProcessor {
             splat_params: [transformA.width, numSplats]
         });
 
+        if (!supportsGLInternalFormatRead(device)) {
+            if (isWebGPU(device) && !loggedCpuFallback) {
+            loggedCpuFallback = true;
+            console.warn('[data-processor] WebGPU backend uses CPU fallback for calcPositions/calcBound in classic pipeline.');
+            }
+
+            const out = resources.data;
+            this.calcPositionsCpu(splat, out);
+            return out;
+        }
+
         device.setBlendState(BlendState.NOBLEND);
         drawQuadWithShader(device, resources.renderTarget, resources.shader);
 
-        const glDevice = device as WebglGraphicsDevice;
-        glDevice.gl.readPixels(
-            0, 0,
-            resources.texture.width,
-            resources.texture.height,
-            resources.texture.impl._glFormat,
-            resources.texture.impl._glPixelType,
-            resources.data
-        );
-
-        return resources.data;
+        const data = await resources.texture.read(0, 0, resources.texture.width, resources.texture.height, {
+            renderTarget: resources.renderTarget,
+            data: resources.data,
+            immediate: false
+        });
+        return data as Float32Array;
+        });
     }
 
     copyRt(source: RenderTarget, dest: RenderTarget) {

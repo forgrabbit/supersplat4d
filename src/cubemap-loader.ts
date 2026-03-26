@@ -2,14 +2,7 @@ import {
     Texture,
     PIXELFORMAT_RGBA8,
     ADDRESS_CLAMP_TO_EDGE,
-    FILTER_LINEAR,
-    CUBEFACE_POSX,
-    CUBEFACE_NEGX,
-    CUBEFACE_POSY,
-    CUBEFACE_NEGY,
-    CUBEFACE_POSZ,
-    CUBEFACE_NEGZ,
-    WebglGraphicsDevice
+    FILTER_LINEAR
 } from 'playcanvas';
 
 /**
@@ -107,60 +100,28 @@ const loadCubemapFromImage = (device: any, image: HTMLImageElement | ImageData):
         magFilter: FILTER_LINEAR
     });
 
-    // Upload each face using WebGL API directly
-    // PlayCanvas doesn't expose a direct API for cubemap face upload, so we use WebGL
-    const glDevice = device as WebglGraphicsDevice;
-    const gl = glDevice.gl;
-    
-    // Force PlayCanvas to initialize the texture by uploading dummy data
-    // This ensures the WebGL texture object is created
-    cubemap.lock();
-    cubemap.unlock();
-    
-    // Get the WebGL texture handle that PlayCanvas created
-    const textureHandle = (cubemap.impl as any)._glTexture;
-    
-    if (!textureHandle) {
-        throw new Error('Failed to get WebGL texture handle from PlayCanvas');
-    }
-    
-    // Save current texture binding
-    const previousTexture = gl.getParameter(gl.TEXTURE_BINDING_CUBE_MAP);
-    
-    // Bind the cubemap texture
-    gl.bindTexture(gl.TEXTURE_CUBE_MAP, textureHandle);
-    
-    const uploadFace = (face: number, imageData: ImageData) => {
-        faceCanvas.width = faceSize;
-        faceCanvas.height = faceSize;
-        faceCtx.putImageData(imageData, 0, 0);
-        
-        // Map PlayCanvas CUBEFACE constants to WebGL constants
-        const glFaceMap: { [key: number]: number } = {
-            [CUBEFACE_POSX]: gl.TEXTURE_CUBE_MAP_POSITIVE_X,
-            [CUBEFACE_NEGX]: gl.TEXTURE_CUBE_MAP_NEGATIVE_X,
-            [CUBEFACE_POSY]: gl.TEXTURE_CUBE_MAP_POSITIVE_Y,
-            [CUBEFACE_NEGY]: gl.TEXTURE_CUBE_MAP_NEGATIVE_Y,
-            [CUBEFACE_POSZ]: gl.TEXTURE_CUBE_MAP_POSITIVE_Z,
-            [CUBEFACE_NEGZ]: gl.TEXTURE_CUBE_MAP_NEGATIVE_Z
-        };
-        
-        const glFace = glFaceMap[face];
-        if (glFace) {
-            gl.texImage2D(glFace, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, faceCanvas);
+    const toCanvas = (face: ImageData) => {
+        const c = document.createElement('canvas');
+        c.width = faceSize;
+        c.height = faceSize;
+        const cctx = c.getContext('2d');
+        if (!cctx) {
+            throw new Error('Failed to get cubemap face canvas context');
         }
+        cctx.putImageData(face, 0, 0);
+        return c;
     };
 
-    uploadFace(CUBEFACE_NEGX, negX);
-    uploadFace(CUBEFACE_POSZ, posZ);
-    uploadFace(CUBEFACE_POSX, posX);
-    uploadFace(CUBEFACE_NEGZ, negZ);
-    uploadFace(CUBEFACE_NEGY, negY);
-    uploadFace(CUBEFACE_POSY, posY);
-    
-    // Restore previous texture binding
-    gl.bindTexture(gl.TEXTURE_CUBE_MAP, previousTexture);
-    
+    // PlayCanvas cubemap face order: +X, -X, +Y, -Y, +Z, -Z
+    cubemap.setSource([
+        toCanvas(posX),
+        toCanvas(negX),
+        toCanvas(posY),
+        toCanvas(negY),
+        toCanvas(posZ),
+        toCanvas(negZ)
+    ]);
+
     return cubemap;
 };
 
