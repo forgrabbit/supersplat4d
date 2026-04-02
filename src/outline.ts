@@ -4,26 +4,27 @@ import {
     BlendState,
     DepthState,
     Color,
+    drawQuadWithShader,
     Entity,
-    Layer,
     Shader,
     ShaderUtils,
-    QuadRender,
-    WebglGraphicsDevice
+    QuadRender
 } from 'playcanvas';
 
 import { Element, ElementType } from './element';
 import { vertexShader, fragmentShader } from './shaders/outline-shader';
 import { Splat } from './splat';
-import { isWebGPU } from './utils/graphics-backend';
 
 class Outline extends Element {
     entity: Entity;
     shader: Shader;
     quadRender: QuadRender;
+    outlineTextureId: any;
+    alphaCutoffId: any;
+    clrId: any;
+    clrStorage = [1, 1, 1, 1];
     enabled = true;
     clr = new Color(1, 1, 1, 0.5);
-    warnedWebgpuUnsupported = false;
 
     constructor() {
         super(ElementType.other);
@@ -63,47 +64,9 @@ class Outline extends Element {
 
         this.quadRender = new QuadRender(this.shader);
 
-        const outlineTextureId = device.scope.resolve('outlineTexture');
-        const alphaCutoffId = device.scope.resolve('alphaCutoff');
-        const clrId = device.scope.resolve('clr');
-        const clrStorage = [1, 1, 1, 1];
-        const events = this.scene.events;
-
-        // apply the outline texture to the display before gizmos render
-        this.entity.camera.on('postRenderLayer', (layer: Layer, transparent: boolean) => {
-            if (!this.entity.enabled || layer !== this.scene.overlayLayer || !transparent) {
-                return;
-            }
-
-            if (isWebGPU(device)) {
-                if (!this.warnedWebgpuUnsupported) {
-                    this.warnedWebgpuUnsupported = true;
-                    console.warn('[outline] WebGPU backend does not support legacy blit path; outline pass is skipped.');
-                }
-                return;
-            }
-
-            device.setBlendState(BlendState.ALPHABLEND);
-            device.setCullMode(CULLFACE_NONE);
-            device.setDepthState(DepthState.NODEPTH);
-            device.setStencilState(null, null);
-
-            const selectedClr = events.invoke('selectedClr');
-            clrStorage[0] = selectedClr.r;
-            clrStorage[1] = selectedClr.g;
-            clrStorage[2] = selectedClr.b;
-            clrStorage[3] = selectedClr.a;
-
-            outlineTextureId.setValue(this.entity.camera.renderTarget.colorBuffer);
-            alphaCutoffId.setValue(events.invoke('camera.mode') === 'rings' ? 0.0 : 0.4);
-            clrId.setValue(clrStorage);
-
-            const glDevice = device as WebglGraphicsDevice;
-            glDevice.setRenderTarget(this.scene.camera.entity.camera.renderTarget);
-            glDevice.updateBegin();
-            this.quadRender.render();
-            glDevice.updateEnd();
-        });
+        this.outlineTextureId = device.scope.resolve('outlineTexture');
+        this.alphaCutoffId = device.scope.resolve('alphaCutoff');
+        this.clrId = device.scope.resolve('clr');
     }
 
     remove() {
@@ -124,6 +87,31 @@ class Outline extends Element {
 
         this.entity.enabled = this.enabled && this.scene.events.invoke('view.outlineSelection');
         this.entity.camera.renderTarget = this.scene.camera.workRenderTarget;
+    }
+
+    onPostRender() {
+        if (!this.entity.enabled) {
+            return;
+        }
+
+        const device = this.scene.app.graphicsDevice;
+        const events = this.scene.events;
+
+        device.setBlendState(BlendState.ALPHABLEND);
+        device.setCullMode(CULLFACE_NONE);
+        device.setDepthState(DepthState.NODEPTH);
+        device.setStencilState(null, null);
+
+        const selectedClr = events.invoke('selectedClr');
+        this.clrStorage[0] = selectedClr.r;
+        this.clrStorage[1] = selectedClr.g;
+        this.clrStorage[2] = selectedClr.b;
+        this.clrStorage[3] = selectedClr.a;
+
+        this.outlineTextureId.setValue(this.entity.camera.renderTarget.colorBuffer);
+        this.alphaCutoffId.setValue(events.invoke('camera.mode') === 'rings' ? 0.0 : 0.4);
+        this.clrId.setValue(this.clrStorage);
+        drawQuadWithShader(device, this.scene.camera.entity.camera.renderTarget, this.shader);
     }
 }
 

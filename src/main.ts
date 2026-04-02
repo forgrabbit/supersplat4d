@@ -126,16 +126,45 @@ const main = async () => {
     // create the graphics device
     const query = new URLSearchParams(window.location.search.slice(1));
     const glslangUrl = query.get('glslangUrl') ??
-        'https://cdn.jsdelivr.net/npm/@webgpu/glslang@0.0.15/dist/web-devel/glslang.js';
+        new URL('static/lib/webgpu/glslang-wrapper.js', document.baseURI).toString();
     const twgslUrl = query.get('twgslUrl') ??
-        'https://cdn.jsdelivr.net/npm/@webgpu/twgsl@0.0.15/dist/twgsl.js';
+        new URL('static/lib/webgpu/twgsl-wrapper.js', document.baseURI).toString();
+
+    const webgpuSupported = typeof navigator !== 'undefined' && !!(navigator as any).gpu;
+    console.info(`[graphics] webgpu api supported=${webgpuSupported}`);
+    if (webgpuSupported) {
+        try {
+            const adapter = await (navigator as any).gpu.requestAdapter();
+            console.info(`[graphics] webgpu adapter available=${!!adapter}`);
+        } catch (e) {
+            console.warn('[graphics] requestAdapter failed:', e);
+        }
+    }
+
+    const checkUrl = async (label: string, url: string) => {
+        try {
+            const response = await fetch(url, { method: 'GET' });
+            console.info(`[graphics] ${label} reachable=${response.ok} status=${response.status} url=${url}`);
+        } catch (e) {
+            console.warn(`[graphics] ${label} fetch failed url=${url}`, e);
+        }
+    };
+    await Promise.all([
+        checkUrl('glslang', glslangUrl),
+        checkUrl('twgsl', twgslUrl)
+    ]);
+    // Use 'default' instead of 'high-performance': PlayCanvas's WebGPU path skips
+    // passing powerPreference to requestAdapter() when it equals 'default', which
+    // avoids the Chrome-on-Windows warning "powerPreference is currently ignored
+    // when calling requestAdapter()".  WebGL2's getContext() accepts 'default' as
+    // a valid context attribute, so this is safe for both backends.
     const graphicsDevice = await createGraphicsDevice(editorUI.canvas, {
         deviceTypes: ['webgpu', 'webgl2'],
         antialias: false,
         depth: false,
         stencil: false,
         xrCompatible: false,
-        powerPreference: 'high-performance',
+        powerPreference: 'default',
         glslangUrl,
         twgslUrl
     });

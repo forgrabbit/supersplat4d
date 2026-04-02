@@ -374,7 +374,8 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             const totalTime = performance.now() - importStartTime;
             console.log(`⏱️  Total import time: ${totalTime.toFixed(2)}ms`);
             return model;
-        } catch (error) {
+        } catch (error: any) {
+            console.error('❌ File loading error (full stack):', error?.stack ?? error);
             await showLoadError(error.message ?? error, file.filename);
         }
     };

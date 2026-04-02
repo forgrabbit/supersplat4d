@@ -1,4 +1,6 @@
 import {
+    math,
+    now,
     // platform,
     WebglGraphicsDevice,
     // SoundManager,
@@ -60,6 +62,63 @@ import {
     // XrManager
 } from 'playcanvas';
 
+/**
+ * Same as AppBase.makeTick, but awaits __supersplat4dGpuAwait after update() so dynamic
+ * WebGPU splats can read back activeCount before the frame renders.
+ */
+function makeSuperSplatTick(application: PCApp) {
+    return async function (timestamp: number, xrFrame?: XRFrame) {
+        const appAny = application as any;
+        if (!application.graphicsDevice) {
+            return;
+        }
+        if (application.frameRequestId) {
+            application.xr?.session?.cancelAnimationFrame(application.frameRequestId);
+            cancelAnimationFrame(application.frameRequestId);
+            application.frameRequestId = undefined;
+        }
+        appAny._inFrameUpdate = true;
+        const currentTime = application._processTimestamp(timestamp) || now();
+        const ms = currentTime - (application._time || currentTime);
+        let dt = ms / 1000.0;
+        dt = math.clamp(dt, 0, application.maxDeltaTime);
+        dt *= application.timeScale;
+        application._time = currentTime;
+        application.requestAnimationFrame();
+        if (application.graphicsDevice.contextLost) {
+            return;
+        }
+        appAny._fillFrameStatsBasic(currentTime, dt, ms);
+        application.fire('frameupdate', ms);
+        let skipUpdate = false;
+        if (xrFrame) {
+            skipUpdate = !application.xr?.update(xrFrame);
+            (application.graphicsDevice as any).defaultFramebuffer = xrFrame.session.renderState.baseLayer.framebuffer;
+        } else {
+            (application.graphicsDevice as any).defaultFramebuffer = null;
+        }
+        if (!skipUpdate) {
+            application.update(dt);
+            const gpu = appAny.__supersplat4dGpuAwait as Promise<void> | undefined;
+            if (gpu) {
+                await gpu;
+                appAny.__supersplat4dGpuAwait = null;
+            }
+            application.fire('framerender');
+            if (application.autoRender || application.renderNextFrame) {
+                application.render();
+                application.renderNextFrame = false;
+            }
+            application.fire('frameend');
+            application.stats.frameEnd();
+        }
+        appAny._inFrameUpdate = false;
+        if (appAny._destroyRequested) {
+            application.destroy();
+        }
+    };
+}
+
 class PCApp extends AppBase {
     constructor(canvas: HTMLCanvasElement, options: any) {
         super(canvas);
@@ -86,6 +145,8 @@ class PCApp extends AppBase {
         // appOptions.xr = XrManager;
 
         this.init(appOptions);
+
+        this.tick = makeSuperSplatTick(this);
     }
 
     addComponentSystems(appOptions: AppOptions) {

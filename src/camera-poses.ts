@@ -41,6 +41,14 @@ const registerCameraPosesEvents = (events: Events) => {
 
             // handle application update tick
             onTimelineChange = (frame: number) => {
+                // Dynamic 4D: timeline frame drives the splat animation. While playing, firing
+                // setPose every frame overwrites orbit/pan from PointerController — it feels like
+                // inverted or "broken" camera control. Video export still uses timeline.time with
+                // playing === false, so poses continue to apply there.
+                if (events.invoke('timeline.isDynamic') && events.invoke('timeline.playing')) {
+                    return;
+                }
+
                 const time = frame;
 
                 // evaluate the spline at current time

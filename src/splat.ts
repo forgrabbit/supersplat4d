@@ -14,6 +14,7 @@ import {
     Entity,
     GSplatData,
     GSplatResource,
+    GSplatResourceBase,
     Mat4,
     Quat,
     Texture,
@@ -23,11 +24,17 @@ import {
 
 import { Element, ElementType } from './element';
 import type { DynManifest } from './loaders/dyn';
+import { DynamicGSplatPipeline } from './dynamic/dynamic-gsplat-pipeline';
+import { DynamicGSplatResource } from './dynamic/dynamic-gsplat-resource';
+import { attachGsplatComputeBuffers, destroyAttachedGsplatComputeBuffers } from './dynamic/gsplat-compute-buffers';
 import { Serializer } from './serializer';
-import { vertexShader, fragmentShader, gsplatCenter } from './shaders/splat-shader';
+import { vertexShader, fragmentShader, gsplatCenter, gsplatModifyWGSL } from './shaders/splat-shader';
 import { State } from './splat-state';
 import { Transform } from './transform';
 import { TransformPalette } from './transform-palette';
+
+/** Must match engine mesh instancing granularity (see GSplatResourceBase.instanceSize). */
+const SPLAT_INSTANCE_SIZE = GSplatResourceBase.instanceSize;
 
 const vec = new Vec3();
 const veca = new Vec3();
@@ -88,6 +95,17 @@ class Splat extends Element {
 
     hasVisibilitySH = false;
     private _freezeOpacityHandler: ((enabled: boolean) => void) | null = null;
+
+    /** GPU cull+sort pipeline (WebGPU). Used for dynamic 4DGS and static splats when compute is supported. */
+    private dynPipeline: DynamicGSplatPipeline | null = null;
+    /** True when attachGsplatComputeBuffers was used on a plain GSplatResource (must destroy on teardown). */
+    private _ownsAttachedComputeBuffers = false;
+    /** True once we've swapped the material's splatOrder to the pipeline's orderTexture. */
+    private _pipelineOrderTextureBound = false;
+    /** Last camera world-position used for GPU sort — re-sort when it changes (even while paused). */
+    private _lastSortCamPos = new Vec3(Infinity, Infinity, Infinity);
+    /** Last camera world-forward used for GPU sort. */
+    private _lastSortCamFwd = new Vec3(Infinity, Infinity, Infinity);
 
     // Dynamic gaussian support
     isDynamic = false;
@@ -268,10 +286,14 @@ class Splat extends Element {
         this.rebuildMaterial = (bands: number) => {
             const { material } = instance;
             // material.blendState = blendState;
-            const { glsl } = material.shaderChunks;
+            const { glsl, wgsl } = material.shaderChunks;
+            // WebGL2 shader chunks (GLSL)
             glsl.set('gsplatVS', vertexShader);
             glsl.set('gsplatPS', fragmentShader);
             glsl.set('gsplatCenterVS', gsplatCenter);
+            // WebGPU shader chunks (WGSL) — override modifySplatCenter which runs in
+            // model-space BEFORE initCenter, letting the engine handle matrix transforms
+            wgsl.set('gsplatModifyVS', gsplatModifyWGSL);
 
             material.setDefine('SH_BANDS', `${Math.min(bands, (instance.resource as GSplatResource).shBands)}`);
             material.setDefine('HAS_VISIBILITY', this.hasVisibilitySH);
@@ -316,16 +338,27 @@ class Splat extends Element {
 
         // when sort changes, re-render the scene and mark sort complete
         instance.sorter.on('updated', () => {
+            // GSplatInstance registers its own 'updated' listener first; it sets numSplats and
+            // instancingCount from the CPU sort worker (full segment mapping count). The WebGPU
+            // dynamic path uses GPU-culled activeCount and a compute-written orderTexture. If we
+            // keep the worker count, numSplats exceeds filled order slots → splatId 0 repeated →
+            // massive overdraw / blown-out white (see onPreRender). The worker can also finish
+            // between the main pass and the outline overlay pass for the selected splat, so the
+            // second draw sees the wrong count. Restore GPU state after the engine listener runs.
+            if (this.dynPipeline) {
+                const gpuInst = this.entity?.gsplat?.instance;
+                if (gpuInst) {
+                    const activeCount = this.dynPipeline.lastActiveCount;
+                    gpuInst.material.setParameter('numSplats', activeCount);
+                    gpuInst.meshInstance.instancingCount = Math.ceil(activeCount / SPLAT_INSTANCE_SIZE);
+                    gpuInst.meshInstance.visible = activeCount > 0;
+                }
+            }
             this.changedCounter++;
             if (this.pendingSort) {
                 this.pendingSort = false;
-                
-                // Now that sorting is complete, update the shader time
-                // This ensures rendering uses the same time as sorting
-                if (this.isDynamic && this.lastSortedTime === this.lastSortedTime) { // not NaN
-                    instance.material.setParameter('uCurrentTime', this.lastSortedTime);
-                }
-                
+                // uCurrentTime is now set in onPreRender() from lastSortedTime to avoid
+                // async timing issues on WebGPU where command buffers encode at render time.
                 this.scene.forceRender = true;
                 this.scene.app.renderNextFrame = true;
             }
@@ -341,12 +374,61 @@ class Splat extends Element {
             this._dyn_m2 = this.splatData.getProp('motion_2') as Float32Array;
             this._dyn_tc = this.splatData.getProp('trbf_center') as Float32Array;
         }
-        
+
+        // Create GPU compute pipeline for WebGPU dynamic splats.
+        // Guards with instanceof to ensure the resource has the required StorageBuffers
+        // (only DynamicGSplatResource creates them; a plain GSplatResource would crash).
+        if (this.isDynamic && DynamicGSplatPipeline.isSupported(device)) {
+            if (resource instanceof DynamicGSplatResource) {
+                try {
+                    this.dynPipeline = new DynamicGSplatPipeline(device, resource, this.numSplats, { mode: 'dynamic' });
+                    console.log(`[Splat] GsplatComputePipeline (dynamic) created for ${this.numSplats} splats`);
+                } catch (err) {
+                    console.warn('[Splat] Failed to create GPU splat pipeline, falling back to CPU sorter:', err);
+                    this.dynPipeline = null;
+                }
+            } else {
+                console.warn('[Splat] Dynamic splat resource is not a DynamicGSplatResource; GPU pipeline disabled.');
+            }
+        } else if (!this.isDynamic && DynamicGSplatPipeline.isSupported(device)) {
+            const resAny = resource as GSplatResource & Record<string, unknown>;
+            if (!resAny.basePosBuffer) {
+                attachGsplatComputeBuffers(device, this.splatData, resAny);
+                this._ownsAttachedComputeBuffers = true;
+            }
+            if (resAny.basePosBuffer && resAny.opacityBuffer) {
+                try {
+                    this.dynPipeline = new DynamicGSplatPipeline(device, resAny as any, this.numSplats, { mode: 'static' });
+                    console.log(`[Splat] GsplatComputePipeline (static) created for ${this.numSplats} splats`);
+                } catch (err) {
+                    console.warn('[Splat] Failed to create static GPU splat pipeline, falling back to CPU sorter:', err);
+                    this.dynPipeline = null;
+                    if (this._ownsAttachedComputeBuffers) {
+                        destroyAttachedGsplatComputeBuffers(resAny);
+                        this._ownsAttachedComputeBuffers = false;
+                    }
+                }
+            } else if (this._ownsAttachedComputeBuffers) {
+                destroyAttachedGsplatComputeBuffers(resAny);
+                this._ownsAttachedComputeBuffers = false;
+            }
+        }
+
+        // attachGsplatComputeBuffers may set resource.hasVisibilitySH from v_sh_* data
+        this.hasVisibilitySH = !!(resource as GSplatResource & { hasVisibilitySH?: boolean }).hasVisibilitySH;
+
         const initTime = performance.now() - initStartTime;
         console.log(`⏱️  Splat constructor initialization: ${initTime.toFixed(2)}ms`);
+
     }
 
     destroy() {
+        this.dynPipeline?.destroy();
+        this.dynPipeline = null;
+        if (this._ownsAttachedComputeBuffers) {
+            destroyAttachedGsplatComputeBuffers(this.asset.resource as GSplatResource & Record<string, unknown>);
+            this._ownsAttachedComputeBuffers = false;
+        }
         super.destroy();
         this.entity.destroy();
         this.asset.registry.remove(this.asset);
@@ -794,8 +876,16 @@ class Splat extends Element {
                     this.lastSortedFrame = 0;
                     this.lastSortedTime = this.dynManifest!.start;
                     
-                    // Set mapping to trigger sort
+                    // Set mapping to trigger sort (CPU path)
                     sorter.setMapping(indices);
+
+                    // GPU pipeline: set segment mask so the visibility-cull compute only
+                    // considers splats belonging to this segment. Without this, the mask
+                    // stays all-1s and TRBF alone is insufficient to exclude splats from
+                    // other time windows — causing over-brightness / glowing-white artefacts.
+                    if (this.dynPipeline) {
+                        this.dynPipeline.updateSegmentMask(indices);
+                    }
                     
                     this.preloadNextSegment(initialSegmentIndex);
                 }
@@ -984,57 +1074,174 @@ class Splat extends Element {
     }
 
     /**
-     * onUpdate: 动态高斯核心更新流程（每帧调用，即使不渲染）
-     * 
-     * 核心诉求：
-     * 1. 每一帧更新位置 (centers)
-     * 2. 排序
-     * 3. 渲染
+     * onUpdate: Dynamic Gaussian core update loop (called every frame).
+     *
+     * When the GPU pipeline is available (WebGPU), all work is done on the GPU:
+     *   center update → visibility cull → sort key → radix sort → copy to orderTexture
+     *
+     * Falls back to the CPU Web Worker sorter + segment mapping on WebGL.
      */
     onUpdate(deltaTime: number) {
+        // ── Static WebGPU: cull + sort when camera moves ───────────────────────
+        if (this.dynPipeline && !this.isDynamic) {
+            if (!this.scene) {
+                return;
+            }
+            const instance = this.entity.gsplat?.instance;
+            if (instance && !this._pipelineOrderTextureBound) {
+                instance.orderTexture = this.dynPipeline.orderTexture;
+                const mat = instance.material;
+                if (mat) {
+                    mat.setParameter('splatOrder', this.dynPipeline.orderTexture);
+                }
+                this._pipelineOrderTextureBound = true;
+            }
+
+            const cameraEntity = this.scene.camera.entity;
+            const camPos = cameraEntity.getPosition();
+            cameraEntity.getWorldTransform().getZ(vecb);
+            const cameraMoved = !camPos.equalsApprox(this._lastSortCamPos) ||
+                !vecb.equalsApprox(this._lastSortCamFwd);
+
+            if (cameraMoved) {
+                this._lastSortCamPos.copy(camPos);
+                this._lastSortCamFwd.copy(vecb);
+                this.scene.addGpuAwait(this.dynPipeline.update(0, cameraEntity, this.entity));
+                this.changedCounter++;
+                this.scene.forceRender = true;
+                this.scene.app.renderNextFrame = true;
+            }
+
+            const gpuInst = this.entity?.gsplat?.instance;
+            if (gpuInst) {
+                const activeCount = this.dynPipeline.lastActiveCount;
+                gpuInst.material.setParameter('numSplats', activeCount);
+                gpuInst.meshInstance.instancingCount = Math.ceil(activeCount / SPLAT_INSTANCE_SIZE);
+                gpuInst.meshInstance.visible = activeCount > 0;
+            }
+            return;
+        }
+
         if (!this.isDynamic || !this.dynManifest) {
             return;
         }
-        
+
         const events = this.scene.events;
-        
-        // 1. 获取当前帧 (从 timeline)
+
+        // 1. Get current frame from timeline
         const currentFrame = (events.invoke('timeline.frame') ?? 0) as number;
         const totalFrames = Math.ceil(this.dynManifest.duration * this.dynManifest.fps);
         const frame = currentFrame % totalFrames;
-        
-        // 2. 计算该帧的绝对时间
+
+        // 2. Compute absolute time for this frame
         const t_abs = this.dynManifest.start + (frame / this.dynManifest.fps);
-        
-        // 3. 检查是否需要更新（帧变了 && 没有正在排序）
-        const needsUpdate = frame !== this.lastSortedFrame && !this.pendingSort;
-        
-        if (needsUpdate) {
-            // 4. 找到对应的 segment
+
+        // ── GPU pipeline path (WebGPU) ────────────────────────────────────────
+        if (this.dynPipeline) {
+            // On the very first frame: redirect the material's 'splatOrder' parameter
+            // to the pipeline's storage-writeable orderTexture.
+            // The GSplatInstance's built-in orderTexture lacks STORAGE_BINDING, so
+            // compute shaders cannot write to it.
+            if (!this._pipelineOrderTextureBound) {
+                const instance = this.entity.gsplat?.instance;
+                if (instance) {
+                    // Replace the instance's orderTexture reference so the material
+                    // uses our storage-writeable texture from now on.
+                    instance.orderTexture = this.dynPipeline.orderTexture;
+                    // Update the material parameter directly.
+                    const mat = instance.material;
+                    if (mat) {
+                        mat.setParameter('splatOrder', this.dynPipeline.orderTexture);
+                    }
+                    this._pipelineOrderTextureBound = true;
+                }
+            }
+
+            // Keep segment mask in sync with the active time segment.
+            // This ensures only splats that belong to the current segment are rendered,
+            // matching the CPU path's setMapping(indices) behaviour.
             const segmentIdx = this.findSegment(t_abs);
-            
-            // 5. 检查 segment 是否在缓存中
+            if (segmentIdx !== this.currentSegmentIndex) {
+                if (this.segmentCache.has(segmentIdx)) {
+                    const segIndices = new Uint32Array(this.segmentCache.get(segmentIdx)!.buffer);
+                    this.dynPipeline.updateSegmentMask(segIndices);
+                    this.currentSegmentIndex = segmentIdx;
+                } else if (!this.loadingSegments.has(segmentIdx)) {
+                    // Start loading; mask stays as-is until data arrives
+                    this.loadSegment(segmentIdx).then(() => {
+                        if (this.dynPipeline && this.segmentCache.has(segmentIdx)) {
+                            const segIndices = new Uint32Array(
+                                this.segmentCache.get(segmentIdx)!.buffer
+                            );
+                            this.dynPipeline.updateSegmentMask(segIndices);
+                            this.currentSegmentIndex = segmentIdx;
+                        }
+                        this.scene.forceRender = true;
+                        this.scene.app.renderNextFrame = true;
+                    });
+                }
+            }
+
+            const cameraEntity = this.scene.camera.entity;
+            const camPos = cameraEntity.getPosition();
+            // getWorldTransform().getZ() gives the camera's world-space Z axis (backward);
+            // this mirrors the engine's own sorter comparison logic (gsplat-instance.js).
+            cameraEntity.getWorldTransform().getZ(vecb);
+
+            const frameChanged  = frame !== this.lastSortedFrame;
+            const cameraMoved   = !camPos.equalsApprox(this._lastSortCamPos) ||
+                                  !vecb.equalsApprox(this._lastSortCamFwd);
+
+            if (frameChanged || cameraMoved) {
+                this.lastSortedFrame = frame;
+                this.lastSortedTime  = t_abs;
+                this._lastSortCamPos.copy(camPos);
+                this._lastSortCamFwd.copy(vecb);
+
+                this.scene.addGpuAwait(this.dynPipeline.update(t_abs, cameraEntity, this.entity));
+                this.changedCounter++;
+                this.scene.forceRender = true;
+                this.scene.app.renderNextFrame = true;
+            }
+
+            // Sync numSplats and instancingCount with the GPU pipeline's active count.
+            // The copyOrder pass writes exactly lastActiveCount entries to orderTexture;
+            // if numSplats (from CPU sorter) > lastActiveCount, extra draw instances
+            // read splatId=0 from the zero-initialized texture → small-blob artifacts.
+            {
+                const gpuInst = this.entity?.gsplat?.instance;
+                if (gpuInst) {
+                    const activeCount = this.dynPipeline.lastActiveCount;
+                    gpuInst.material.setParameter('numSplats', activeCount);
+                    gpuInst.meshInstance.instancingCount = Math.ceil(activeCount / SPLAT_INSTANCE_SIZE);
+                    gpuInst.meshInstance.visible = activeCount > 0;
+                }
+            }
+            return;
+        }
+
+        // ── CPU fallback path (WebGL / no compute support) ────────────────────
+        const needsUpdate = frame !== this.lastSortedFrame && !this.pendingSort;
+
+        if (needsUpdate) {
+            const segmentIdx = this.findSegment(t_abs);
+
             if (this.segmentCache.has(segmentIdx)) {
                 const indices = new Uint32Array(this.segmentCache.get(segmentIdx)!);
                 this.activeIndices = indices;
                 this.currentSegmentIndex = segmentIdx;
-                
-                // 6. 更新 centers: p(t) = p0 + motion * (t - trbf_center)
+
                 const sorter = this.entity.gsplat.instance.sorter;
                 this.updateCentersForTime(sorter.centers, indices, t_abs);
-                
-                // 7. 触发排序 (shader uniform uCurrentTime will be set when sorting completes)
+
                 this.pendingSort = true;
                 this.lastSortedFrame = frame;
                 this.lastSortedTime = t_abs;
-                
+
                 sorter.setMapping(indices);
-                
-                // 预加载下一个 segment
                 this.preloadNextSegment(segmentIdx);
-                
+
             } else if (!this.loadingSegments.has(segmentIdx)) {
-                // segment 不在缓存，异步加载
                 this.loadSegment(segmentIdx).then(() => {
                     this.scene.forceRender = true;
                     this.scene.app.renderNextFrame = true;
@@ -1052,6 +1259,31 @@ class Splat extends Element {
         const cameraMode = events.invoke('camera.mode');
         const cameraOverlay = events.invoke('camera.overlay');
         const material = this.entity.gsplat.instance.material;
+
+        // ── GPU pipeline: enforce correct instancingCount / numSplats at render time ──
+        // The CPU sorter fires 'updated' asynchronously after setMapping(); the engine's
+        // own 'updated' listener resets instancingCount/numSplats to the full segment
+        // count. We must override this immediately before the draw call so that only
+        // the GPU-culled activeCount splats are rendered. Without this, source.order
+        // indices >= activeCount read zero-initialised orderTexture slots → all render
+        // as splatId=0 → massive overdraw of a single splat → glowing-white artefact.
+        if (this.dynPipeline) {
+            const gpuInst = this.entity?.gsplat?.instance;
+            if (gpuInst) {
+                const activeCount = this.dynPipeline.lastActiveCount;
+                gpuInst.material.setParameter('numSplats', activeCount);
+                gpuInst.meshInstance.instancingCount = Math.ceil(activeCount / SPLAT_INSTANCE_SIZE);
+                gpuInst.meshInstance.visible = activeCount > 0;
+            }
+        }
+
+        // Always sync uCurrentTime at render time so WebGPU command buffers encode
+        // the correct time regardless of async sort callback order.
+        // Fall back to this.currentTime when lastSortedTime hasn't been set yet.
+        if (this.isDynamic) {
+            const t = isNaN(this.lastSortedTime) ? this.currentTime : this.lastSortedTime;
+            material.setParameter('uCurrentTime', t);
+        }
 
         if (this.hasVisibilitySH) {
             const frozen = !!events.invoke('visibility.freezeEffectiveOpacity');

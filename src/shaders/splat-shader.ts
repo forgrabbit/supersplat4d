@@ -141,7 +141,7 @@ void main(void) {
         // Note: We use a simplified check here (gaussian weight only) for early discard.
         // Full opacity check (including base opacity) is done in CPU-side selection logic.
         #ifdef DYNAMIC_MODE
-        if (uFrameOnlyMode && uIsDynamic) {
+        if (uFrameOnlyMode && uIsDynamic > 0.5) {
             ivec2 uv = splat.uv;
             vec2 trbfData = texelFetch(splatTrbf, uv, 0).rg;
             float trbfCenter = trbfData.r;
@@ -202,7 +202,7 @@ void main(void) {
 
         // Apply dynamic opacity for dynamic gaussians
         #ifdef DYNAMIC_MODE
-        if (uIsDynamic) {
+        if (uIsDynamic > 0.5) {
             ivec2 uv = splat.uv;
             vec2 trbfData = texelFetch(splatTrbf, uv, 0).rg;
             float trbfCenter = trbfData.r;
@@ -228,7 +228,7 @@ void main(void) {
             #ifdef FROZEN_OPACITY
                 color.a = loadSplatFrozenOpacity().r;
             #else
-                vec3 centerForVis = uIsDynamic ? computeDynamicPosition(modelCenter) : modelCenter;
+                vec3 centerForVis = uIsDynamic > 0.5 ? computeDynamicPosition(modelCenter) : modelCenter;
                 vec3 D_view = normalize(centerForVis - uCameraPosition);
                 float visRaw = evalVisibilitySHDeg3(D_view);
                 float visibility = sigmoid(visRaw);
@@ -330,11 +330,11 @@ uniform mat4 matrix_view;
 uniform mat4 matrix_projection;
 uniform vec4 camera_params;                     // 1/far, far, near, isOrtho (required by gsplatCornerVS)
 
-uniform highp usampler2D splatTransform;        // per-splat index into transform palette
+uniform usampler2D splatTransform;              // per-splat index into transform palette
 uniform sampler2D transformPalette;             // palette of transform matrices
 
 uniform float uCurrentTime;                     // current absolute time for dynamic gaussians
-uniform bool uIsDynamic;                        // whether this is a dynamic gaussian splat
+uniform float uIsDynamic;                       // 1.0 = dynamic, 0.0 = static (bool as float for WGSL compat)
 #ifdef DYNAMIC_MODE
 uniform sampler2D splatMotion;                 // For dynamic: motion_0, motion_1, motion_2 (RGB)
 uniform sampler2D splatTrbf;                    // For dynamic: trbf_center, trbf_scale (RG)
@@ -365,7 +365,7 @@ vec3 computeDynamicPosition(vec3 basePos) {
     #ifndef DYNAMIC_MODE
     return basePos;
     #else
-    if (!uIsDynamic) {
+    if (uIsDynamic < 0.5) {
         return basePos;
     }
     
@@ -388,7 +388,7 @@ vec3 computeDynamicPosition(vec3 basePos) {
 // project the model space gaussian center to view and clip space
 bool initCenter(vec3 modelCenter, inout SplatCenter center) {
     // Apply dynamic position transformation if this is a dynamic gaussian
-    vec3 dynamicCenter = uIsDynamic ? computeDynamicPosition(modelCenter) : modelCenter;
+    vec3 dynamicCenter = uIsDynamic > 0.5 ? computeDynamicPosition(modelCenter) : modelCenter;
     
     mat4 modelView = matrix_view * applyPaletteTransform(matrix_model);
     vec4 centerView = modelView * vec4(dynamicCenter, 1.0);
@@ -411,4 +411,129 @@ bool initCenter(vec3 modelCenter, inout SplatCenter center) {
 }
 `;
 
-export { vertexShader, fragmentShader, gsplatCenter };
+/**
+ * WGSL override for gsplatModifyVS — injected into the engine's gsplatVS via shaderChunks.
+ *
+ * The engine's gsplatVS (WGSL) calls three hooks we override here:
+ *   modifySplatCenter()         — model-space position offset (called before initCenter)
+ *   modifySplatRotationScale()  — rotation/scale tweak (stub, unused)
+ *   modifySplatColor()          — alpha/color tweak (called after getColor + SH)
+ *
+ * On WebGL the full custom vertexShader GLSL chunk handles everything.
+ * On WebGPU only this WGSL chunk is active, so ALL per-splat effects must live here.
+ *
+ * TRBF (Temporal Radial Basis Function) model:
+ *   position: p(t) = p0 + motion * (t - trbf_center)          (linear)
+ *   alpha:    a(t) = base_alpha * exp(-((t - trbf_center) / trbf_scale)^2)
+ *
+ * Flow in engine gsplatVS (WGSL):
+ *   getCenter()              → reads model-space position p0 from engine texture
+ *   modifySplatCenter()      ← applies linear motion offset in model space
+ *   initCenter()             → engine applies matrix_model * matrix_view * projection
+ *   getColor() + evalSH()    → base colour + spherical harmonics
+ *   modifySplatColor()       ← applies TRBF gaussian kernel to alpha
+ *   clipCorner() + output    → engine discards if alpha too small
+ */
+const gsplatModifyWGSL = /* wgsl */`
+#ifdef DYNAMIC_MODE
+uniform uCurrentTime: f32;
+// texture_2d<uff> uses sampleType:'unfilterable-float' in the bind-group layout,
+// which is correct for rgba32float on ALL WebGPU devices (including those that lack
+// the optional float32-filterable feature).  textureLoad() still returns vec4<f32>.
+var splatMotion: texture_2d<uff>;
+var splatTrbf: texture_2d<uff>;
+#endif
+
+#ifdef HAS_VISIBILITY
+uniform uCameraPosition: vec3f;
+var splatVisibilitySH0: texture_2d<uff>;
+var splatVisibilitySH1: texture_2d<uff>;
+var splatVisibilitySH2: texture_2d<uff>;
+var splatVisibilitySH3: texture_2d<uff>;
+#ifdef FROZEN_OPACITY
+var splatFrozenOpacity: texture_2d<uff>;
+#endif
+
+fn visSigmoid(x: f32) -> f32 {
+    return 1.0 / (1.0 + exp(-x));
+}
+
+// Same layout as GLSL evalVisibilitySHDeg3 / compute cull SH (deg 3).
+fn evalVisibilitySHDeg3WGSL(d: vec3f, sh0: vec4f, sh1: vec4f, sh2: vec4f, sh3: vec4f) -> f32 {
+    let x = d.x;
+    let y = d.y;
+    let z = d.z;
+    let xx = x * x;
+    let yy = y * y;
+    let zz = z * z;
+    let xy = x * y;
+    let yz = y * z;
+    let xz = x * z;
+    let xx_yy = xx - yy;
+    var r = 0.28209479177387814 * sh0.x;
+    r += -0.4886025119029199 * y * sh0.y;
+    r += 0.4886025119029199 * z * sh0.z;
+    r += -0.4886025119029199 * x * sh0.w;
+    r += 1.0925484305920792 * xy * sh1.x;
+    r += -1.0925484305920792 * yz * sh1.y;
+    r += 0.31539156525252005 * (2.0 * zz - xx - yy) * sh1.z;
+    r += -1.0925484305920792 * xz * sh1.w;
+    r += 0.5462742152960396 * xx_yy * sh2.x;
+    r += -0.5900435899266435 * y * (3.0 * xx - yy) * sh2.y;
+    r += 2.890611442640554 * x * y * z * sh2.z;
+    r += -0.4570457994644658 * y * (4.0 * zz - xx - yy) * sh2.w;
+    r += 0.3731763325901154 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * sh3.x;
+    r += -0.4570457994644658 * x * (4.0 * zz - xx - yy) * sh3.y;
+    r += 1.445305721320277 * z * xx_yy * sh3.z;
+    r += -0.5900435899266435 * x * (xx - 3.0 * yy) * sh3.w;
+    return r;
+}
+#endif
+
+// Linear motion model: pos(t) = p0 + motion * (t - trbf_center)
+fn modifySplatCenter(center: ptr<function, vec3f>) {
+    #ifdef DYNAMIC_MODE
+    let motionData: vec4f = textureLoad(splatMotion, splat.uv, 0);
+    let trbfData:   vec4f = textureLoad(splatTrbf,   splat.uv, 0);
+    let dt: f32 = uniform.uCurrentTime - trbfData.r;
+    *center += motionData.rgb * dt;
+    #endif
+}
+
+// Stub: rotation/scale are not modified for 4DGS
+fn modifySplatRotationScale(originalCenter: vec3f, modifiedCenter: vec3f, rotation: ptr<function, vec4f>, scale: ptr<function, vec3f>) {
+}
+
+// Apply TRBF temporal gaussian kernel to alpha.
+// Matches the WebGL path in vertexShader GLSL (FORWARD_PASS block).
+// Without this, off-peak splats render at full opacity → over-bright glow.
+// NOTE: No runtime uIsDynamic check needed here – DYNAMIC_MODE is the compile-time
+// gate and is only set when isDynamic=true.  Removing the runtime check eliminates
+// one failure mode (the float uniform not being written to the mesh UB in time).
+fn modifySplatColor(center: vec3f, color: ptr<function, vec4f>) {
+    #ifdef DYNAMIC_MODE
+    let trbfData: vec4f  = textureLoad(splatTrbf, splat.uv, 0);
+    let trbfCenter: f32  = trbfData.r;
+    let trbfScale: f32   = max(trbfData.g, 1e-6);
+    let dt: f32          = (uniform.uCurrentTime - trbfCenter) / trbfScale;
+    let gaussian: f32    = exp(-dt * dt);
+    (*color).a = (*color).a * gaussian;
+    #endif
+
+    #ifdef HAS_VISIBILITY
+        #ifdef FROZEN_OPACITY
+        (*color).a = textureLoad(splatFrozenOpacity, splat.uv, 0).r;
+        #else
+        let sh0v = textureLoad(splatVisibilitySH0, splat.uv, 0);
+        let sh1v = textureLoad(splatVisibilitySH1, splat.uv, 0);
+        let sh2v = textureLoad(splatVisibilitySH2, splat.uv, 0);
+        let sh3v = textureLoad(splatVisibilitySH3, splat.uv, 0);
+        let D_view = normalize(center - uniform.uCameraPosition);
+        let visRaw = evalVisibilitySHDeg3WGSL(D_view, sh0v, sh1v, sh2v, sh3v);
+        (*color).a = (*color).a * visSigmoid(visRaw);
+        #endif
+    #endif
+}
+`;
+
+export { vertexShader, fragmentShader, gsplatCenter, gsplatModifyWGSL };

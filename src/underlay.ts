@@ -5,12 +5,11 @@ import {
     SEMANTIC_POSITION,
     BlendState,
     Color,
+    drawQuadWithShader,
     Entity,
-    Layer,
     Shader,
     ShaderUtils,
-    QuadRender,
-    WebglGraphicsDevice
+    QuadRender
 } from 'playcanvas';
 
 import { Element, ElementType } from './element';
@@ -21,8 +20,9 @@ class Underlay extends Element {
     entity: Entity;
     shader: Shader;
     quadRender: QuadRender;
+    _blendState: BlendState;
+    _blitTextureId: any;
     enabled = true;
-    warnedWebgpuUnsupported = false;
 
     constructor() {
         super(ElementType.other);
@@ -55,30 +55,8 @@ class Underlay extends Element {
             BLENDEQUATION_ADD, BLENDMODE_ONE, BLENDMODE_ONE,
             BLENDEQUATION_ADD, BLENDMODE_ZERO, BLENDMODE_ONE
         );
-
-        this.entity.camera.on('postRenderLayer', (layer: Layer, transparent: boolean) => {
-            if (!this.entity.enabled || layer !== this.scene.overlayLayer || !transparent) {
-                return;
-            }
-
-            if (isWebGPU(device)) {
-                if (!this.warnedWebgpuUnsupported) {
-                    this.warnedWebgpuUnsupported = true;
-                    console.warn('[underlay] WebGPU backend does not support legacy blit path; underlay pass is skipped.');
-                }
-                return;
-            }
-
-            device.setBlendState(blendState);
-
-            blitTextureId.setValue(this.entity.camera.renderTarget.colorBuffer);
-
-            const glDevice = device as WebglGraphicsDevice;
-            glDevice.setRenderTarget(this.scene.camera.entity.camera.renderTarget);
-            glDevice.updateBegin();
-            this.quadRender.render();
-            glDevice.updateEnd();
-        });
+        this._blendState = blendState;
+        this._blitTextureId = blitTextureId;
     }
 
     remove() {
@@ -99,6 +77,21 @@ class Underlay extends Element {
 
         this.entity.enabled = this.enabled && !this.scene.events.invoke('view.outlineSelection');
         this.entity.camera.renderTarget = this.scene.camera.workRenderTarget;
+    }
+
+    onPostRender() {
+        if (!this.entity.enabled) {
+            return;
+        }
+
+        const device = this.scene.app.graphicsDevice;
+        const skipBlit = isWebGPU(device);
+        device.setBlendState(this._blendState);
+        this._blitTextureId.setValue(this.entity.camera.renderTarget.colorBuffer);
+        if (skipBlit) {
+            return;
+        }
+        drawQuadWithShader(device, this.scene.camera.entity.camera.renderTarget, this.shader);
     }
 }
 

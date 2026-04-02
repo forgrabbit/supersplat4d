@@ -45,6 +45,9 @@ class Scene {
     lockedRenderMode = false;
     lockedRender = false;
 
+    /** Collected each frame; PCApp tick awaits these before render (dynamic WebGPU splats). */
+    private _gpuAwaitList: Promise<void>[] = [];
+
     canvasResize: {width: number; height: number} | null = null;
     targetSize = {
         width: 0,
@@ -81,7 +84,11 @@ class Scene {
         this.app.autoRender = false;
         // @ts-ignore
         this.app._allowResize = false;
-        this.app.scene.clusteredLightingEnabled = false;
+        // WebGPU mandates clustered lighting and ignores this flag (emitting a warning
+        // if set to false), so only disable it on WebGL where it is meaningful.
+        if (!graphicsDevice.isWebGPU) {
+            this.app.scene.clusteredLightingEnabled = false;
+        }
 
         // hack: disable lightmapper first bake until we expose option for this
         // @ts-ignore
@@ -90,8 +97,16 @@ class Scene {
         // @ts-ignore
         this.app.loader.getHandler('texture').imgParser.crossOrigin = 'anonymous';
 
-        // this is required to get full res AR mode backbuffer
-        this.app.graphicsDevice.maxPixelRatio = window.devicePixelRatio;
+        // We handle DPR ourselves via devicePixelContentBoxSize in the ResizeObserver.
+        // Setting maxPixelRatio > 1 causes the engine to double-scale the swapchain,
+        // producing a scissor/backbuffer size mismatch on WebGPU.
+        this.app.graphicsDevice.maxPixelRatio = 1;
+
+        // Set the initial canvas resolution immediately so the very first WebGPU render
+        // uses the correct dimensions.  Without this the engine uses the un-scaled CSS
+        // pixel size for the swapchain but a DPR-scaled value for the scissor rect,
+        // producing the "Scissor rect not contained in render target" validation error.
+        (this.app.graphicsDevice as any).setResolution(canvas.clientWidth, canvas.clientHeight);
 
         // configure application canvas
         const observer = new ResizeObserver((entries: ResizeObserverEntry[]) => {
@@ -316,9 +331,31 @@ class Scene {
         this.elements.forEach(action);
     }
 
+    addGpuAwait(p: Promise<void>) {
+        this._gpuAwaitList.push(p);
+    }
+
     private onUpdate(deltaTime: number) {
+        (this.app as any).__supersplat4dGpuAwait = null;
+        this._gpuAwaitList.length = 0;
+
+        // Apply any pending canvas resize BEFORE render() → frameStart() so that
+        // the swapchain texture and the scissor rect always use the same dimensions.
+        // onPreRender fires AFTER frameStart(), so calling setResolution there is
+        // too late — it changes canvas.width/height while the backbuffer is already
+        // locked, producing the "Scissor rect not contained in render target" error.
+        if (this.canvasResize) {
+            const { width, height } = this.canvasResize;
+            this.canvasResize = null;
+            (this.app.graphicsDevice as any).setResolution(width, height);
+        }
+
         // allow elements to update
         this.forEachElement(e => e.onUpdate(deltaTime));
+
+        if (this._gpuAwaitList.length > 0) {
+            (this.app as any).__supersplat4dGpuAwait = Promise.all(this._gpuAwaitList);
+        }
 
         // fire global update
         this.events.fire('update', deltaTime);
@@ -357,11 +394,8 @@ class Scene {
     }
 
     private onPreRender() {
-        if (this.canvasResize) {
-            this.canvas.width = this.canvasResize.width;
-            this.canvas.height = this.canvasResize.height;
-            this.canvasResize = null;
-        }
+        // NOTE: canvas resize is now applied in onUpdate() (before render/frameStart),
+        // not here — see the comment there for why.
 
         // update render target size
         this.targetSize.width = Math.ceil(this.app.graphicsDevice.width / this.config.camera.pixelScale);

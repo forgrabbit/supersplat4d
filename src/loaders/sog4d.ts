@@ -13,6 +13,7 @@
  */
 
 import { Asset, AssetRegistry, GSplatData, GSplatResource, Vec3 } from 'playcanvas';
+import { DynamicGSplatResource } from '../dynamic/dynamic-gsplat-resource';
 // JSZip is loaded globally via script tag in index.html
 declare const JSZip: any;
 
@@ -338,18 +339,18 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatDa
         const o = i * 4;
         const tag = quatsRgba[o + 3];
         if (tag < 252 || tag > 255) {
-            // Invalid tag, use identity quaternion
-            rot_0[i] = 0;
+            // Identity quaternion — PlayCanvas convention: rot_0=w, rot_1=x, rot_2=y, rot_3=z
+            rot_0[i] = 1;
             rot_1[i] = 0;
             rot_2[i] = 0;
-            rot_3[i] = 1;
+            rot_3[i] = 0;
             continue;
         }
-        const [qx, qy, qz, qw] = unpackQuat(quatsRgba[o], quatsRgba[o + 1], quatsRgba[o + 2], tag);
-        rot_0[i] = qx;
-        rot_1[i] = qy;
-        rot_2[i] = qz;
-        rot_3[i] = qw;
+        const [q0, q1, q2, q3] = unpackQuat(quatsRgba[o], quatsRgba[o + 1], quatsRgba[o + 2], tag);
+        // SOG format WXYZ convention: comps[0]=w, comps[1]=x, comps[2]=y, comps[3]=z
+        // Verified against PlayCanvas built-in GSplatSogData decoder (dist/index.js)
+        // Direct mapping: rot_0=w, rot_1=x, rot_2=y, rot_3=z
+        rot_0[i] = q0; rot_1[i] = q1; rot_2[i] = q2; rot_3[i] = q3;
     }
     const quatsDecodeTime = performance.now() - quatsDecodeStartTime;
     console.log(`⏱️  Quaternions decoding: ${quatsDecodeTime.toFixed(2)}ms`);
@@ -598,8 +599,10 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
             return;
         }
 
-        // Create resource and store dynamic metadata
-        const resource = new GSplatResource(device, gsplatData);
+        // Create resource — use DynamicGSplatResource which adds motion/trbf/visSH streams
+        // for the GPU compute pipeline (Phase 3–7 of the migration plan).
+        const resource = new DynamicGSplatResource(device, gsplatData);
+        (resource as any).hasVisibilitySH = resource.hasVisibilitySH;
         (resource as any).dynManifest = dynManifest;
         (resource as any).dynBaseUrl = '';  // Not used for SOG4D
         (resource as any).sog4dSegments = zipEntries;  // Store preloaded segments
@@ -650,8 +653,444 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
 };
 
 /**
+ * Parse a static SOG bundle (v1/v2) folder directly from a JSZip object.
+ *
+ * This avoids the PlayCanvas SogBundleParser → decompress() → readImageDataAsync()
+ * GPU readback path, which can fail with "Cannot read properties of undefined
+ * (reading '0')" when textures are not yet uploaded to the GPU at the time the
+ * CPU-side readback is attempted.
+ *
+ * We decode the WebP pixel data on the CPU (the same way parseSog4d does for
+ * dynamic data) and construct a GSplatData / GSplatResource directly.
+ */
+const parseStaticSogFolder = async (zip: any, folderName: string, assets: AssetRegistry, device: any): Promise<Asset> => {
+    console.log(`  [parseStaticSogFolder] Decoding ${folderName}...`);
+
+    // ── 1. Read meta.json ─────────────────────────────────────────────────────
+    const metaEntry = zip.file(`${folderName}/meta.json`);
+    if (!metaEntry) throw new Error(`Missing ${folderName}/meta.json`);
+    const metaRaw = await metaEntry.async('arraybuffer');
+    const meta: any = JSON.parse(new TextDecoder().decode(metaRaw));
+
+    const count: number = meta.count;
+    console.log(`  [parseStaticSogFolder] ${count} splats, version ${meta.version}`);
+
+    // ── 2. Decode WebP images in parallel ─────────────────────────────────────
+    const readWebP = (path: string) => {
+        const entry = zip.file(path);
+        if (!entry) throw new Error(`Missing file ${path}`);
+        return entry.async('arraybuffer').then(decodeWebP);
+    };
+
+    const [meansL, meansU, quatsData, scalesData, sh0Data] = await Promise.all([
+        readWebP(`${folderName}/${meta.means.files[0]}`),
+        readWebP(`${folderName}/${meta.means.files[1]}`),
+        readWebP(`${folderName}/${meta.quats.files[0]}`),
+        readWebP(`${folderName}/${meta.scales.files[0]}`),
+        readWebP(`${folderName}/${meta.sh0.files[0]}`)
+    ]);
+
+    // ── 3. Allocate output arrays ─────────────────────────────────────────────
+    const x        = new Float32Array(count);
+    const y        = new Float32Array(count);
+    const z        = new Float32Array(count);
+    const scale_0  = new Float32Array(count);
+    const scale_1  = new Float32Array(count);
+    const scale_2  = new Float32Array(count);
+    const rot_0    = new Float32Array(count);
+    const rot_1    = new Float32Array(count);
+    const rot_2    = new Float32Array(count);
+    const rot_3    = new Float32Array(count);
+    const f_dc_0   = new Float32Array(count);
+    const f_dc_1   = new Float32Array(count);
+    const f_dc_2   = new Float32Array(count);
+    const opacity  = new Float32Array(count);
+
+    // ── 4. Decode means (position with log-transform + 16-bit quantisation) ───
+    const meansLR = meansL.rgba, meansUR = meansU.rgba;
+    const mMins = meta.means.mins as number[], mMaxs = meta.means.maxs as number[];
+    for (let i = 0; i < count; i++) {
+        const o = i * 4;
+        x[i] = invLogTransform(dequantize16bit(meansLR[o],   meansUR[o],   mMins[0], mMaxs[0]));
+        y[i] = invLogTransform(dequantize16bit(meansLR[o+1], meansUR[o+1], mMins[1], mMaxs[1]));
+        z[i] = invLogTransform(dequantize16bit(meansLR[o+2], meansUR[o+2], mMins[2], mMaxs[2]));
+    }
+
+    // ── 5. Decode quaternions (smallest-component) ────────────────────────────
+    const qR = quatsData.rgba;
+    for (let i = 0; i < count; i++) {
+        const o = i * 4;
+        const tag = qR[o+3];
+        if (tag < 252 || tag > 255) {
+            // Identity quaternion: w=1, x=0, y=0, z=0
+            rot_0[i] = 1; rot_1[i] = 0; rot_2[i] = 0; rot_3[i] = 0;
+            continue;
+        }
+        const [q0, q1, q2, q3] = unpackQuat(qR[o], qR[o+1], qR[o+2], tag);
+        // SOG format WXYZ convention: comps[0]=w, comps[1]=x, comps[2]=y, comps[3]=z
+        rot_0[i] = q0; rot_1[i] = q1; rot_2[i] = q2; rot_3[i] = q3;
+    }
+
+    // ── 6. Decode scales (codebook lookup) ────────────────────────────────────
+    const sR = scalesData.rgba;
+    const sBook = new Float32Array(meta.scales.codebook);
+    for (let i = 0; i < count; i++) {
+        const o = i * 4;
+        scale_0[i] = sBook[sR[o]];
+        scale_1[i] = sBook[sR[o+1]];
+        scale_2[i] = sBook[sR[o+2]];
+    }
+
+    // ── 7. Decode colours / opacity (sh0 codebook + sigmoid opacity) ──────────
+    const cR = sh0Data.rgba;
+    const cBook = new Float32Array(meta.sh0.codebook);
+    for (let i = 0; i < count; i++) {
+        const o = i * 4;
+        f_dc_0[i] = cBook[cR[o]];
+        f_dc_1[i] = cBook[cR[o+1]];
+        f_dc_2[i] = cBook[cR[o+2]];
+        opacity[i] = sigmoidInv(cR[o+3] / 255);
+    }
+
+    // ── 8. Build GSplatData ───────────────────────────────────────────────────
+    const gsplatData = new GSplatData([{
+        name: 'vertex',
+        count,
+        properties: [
+            { type: 'float', name: 'x',       storage: x,       byteSize: 4 },
+            { type: 'float', name: 'y',       storage: y,       byteSize: 4 },
+            { type: 'float', name: 'z',       storage: z,       byteSize: 4 },
+            { type: 'float', name: 'scale_0', storage: scale_0, byteSize: 4 },
+            { type: 'float', name: 'scale_1', storage: scale_1, byteSize: 4 },
+            { type: 'float', name: 'scale_2', storage: scale_2, byteSize: 4 },
+            { type: 'float', name: 'rot_0',   storage: rot_0,   byteSize: 4 },
+            { type: 'float', name: 'rot_1',   storage: rot_1,   byteSize: 4 },
+            { type: 'float', name: 'rot_2',   storage: rot_2,   byteSize: 4 },
+            { type: 'float', name: 'rot_3',   storage: rot_3,   byteSize: 4 },
+            { type: 'float', name: 'f_dc_0',  storage: f_dc_0,  byteSize: 4 },
+            { type: 'float', name: 'f_dc_1',  storage: f_dc_1,  byteSize: 4 },
+            { type: 'float', name: 'f_dc_2',  storage: f_dc_2,  byteSize: 4 },
+            { type: 'float', name: 'opacity', storage: opacity,  byteSize: 4 }
+        ]
+    }]);
+
+    // ── 9. Create GSplatResource (uploads to GPU) ─────────────────────────────
+    const resource = new GSplatResource(device, gsplatData);
+
+    // ── 10. Wrap in an Asset and return ──────────────────────────────────────
+    const filename = `${folderName}.sog`;
+    const asset = new Asset(filename, 'gsplat', { url: `local-asset-${getNextAssetId()}`, filename } as any);
+    asset.resource = resource;
+    assets.add(asset);
+    (asset as any)._loaded  = true;
+    (asset as any)._loading = false;
+
+    return new Promise<Asset>((resolve) => {
+        setTimeout(() => {
+            asset.fire('load', asset);
+            resolve(asset);
+        }, 0);
+    });
+};
+
+/**
+ * Parse the dynamic/ subfolder of a sog4d_multi archive directly from the
+ * outer ZIP object.  This is the parallel to parseStaticSogFolder and avoids
+ * the virtual-ZIP round-trip (re-compress → re-decompress) that the old
+ * approach used.  Filenames are read from meta.json so the code is not
+ * sensitive to naming conventions used by different versions of the Python
+ * export script.
+ */
+const parseDynamicSogFolder = async (
+    zip: any,
+    folderName: string,
+    assetFilename: string,
+    assets: AssetRegistry,
+    device: any,
+    events?: any
+): Promise<Asset> => {
+    const totalStartTime = performance.now();
+    console.log(`🔄 Parsing dynamic SOG folder '${folderName}'...`);
+
+    // Helper: read a file from the outer ZIP at folderName/name
+    const readEntry = async (name: string): Promise<ArrayBuffer> => {
+        const path = `${folderName}/${name}`;
+        const entry = zip.file(path);
+        if (!entry) throw new Error(`Missing file in SOG4D dynamic folder: ${path}`);
+        const buf = await entry.async('arraybuffer') as ArrayBuffer;
+        console.log(`  📦 ${name}: ${(buf.byteLength / 1024).toFixed(2)} KB`);
+        return buf;
+    };
+
+    // ── 1. Read meta.json ─────────────────────────────────────────────────────
+    const metaRaw = await readEntry('meta.json');
+    const meta: Sog4dMeta = JSON.parse(new TextDecoder().decode(metaRaw));
+    const count = meta.count;
+    console.log(`📊 SOG4D: ${count} splats, ${meta.width}x${meta.height} texture`);
+    console.log(`📊 Duration: ${meta.duration}s @ ${meta.fps} fps`);
+
+    // ── 2. Decode all WebP files in parallel using actual filenames ───────────
+    const readWebP = (name: string) => readEntry(name).then(decodeWebP);
+    const trbfIsKmeans = meta.trbf.encoding === 'kmeans';
+    const totalWebpFiles = trbfIsKmeans ? 8 : 9;
+    console.log(`  Loading and decoding ${totalWebpFiles} WebP files (all parallel)...`);
+    const webpStartTime = performance.now();
+
+    // Use filenames from meta.json so we are not sensitive to naming conventions
+    const meansFiles = meta.means.files;
+    const quatsFile  = meta.quats.files[0];
+    const scalesFile = meta.scales.files[0];
+    const sh0File    = meta.sh0.files[0];
+    const motionFiles = meta.motion.files;
+
+    const parallelDecodes: Promise<{ rgba: Uint8Array, width: number, height: number }>[] = [
+        readWebP(meansFiles[0]),
+        readWebP(meansFiles[1]),
+        readWebP(quatsFile),
+        readWebP(scalesFile),
+        readWebP(sh0File),
+        readWebP(motionFiles[0]),
+        readWebP(motionFiles[1])
+    ];
+
+    if (trbfIsKmeans) {
+        parallelDecodes.push(readWebP(meta.trbf.files[0]));
+    } else {
+        parallelDecodes.push(readWebP(meta.trbf.files[0]), readWebP(meta.trbf.files[1]));
+    }
+
+    const webpResults = await Promise.all(parallelDecodes);
+    console.log(`⏱️  WebP decoding (${totalWebpFiles} files, all parallel): ${(performance.now() - webpStartTime).toFixed(2)}ms`);
+
+    const [meansL, meansU, quatsData, scalesData, sh0Data, motionL, motionU] = webpResults.slice(0, 7);
+    let trbfData: { rgba: Uint8Array, width: number, height: number } | null = null;
+    let trbfL: { rgba: Uint8Array, width: number, height: number } | null = null;
+    let trbfU: { rgba: Uint8Array, width: number, height: number } | null = null;
+    if (trbfIsKmeans) { trbfData = webpResults[7]; }
+    else               { trbfL = webpResults[7]; trbfU = webpResults[8]; }
+
+    // ── 3. Allocate output arrays ─────────────────────────────────────────────
+    const x         = new Float32Array(count);
+    const y         = new Float32Array(count);
+    const z         = new Float32Array(count);
+    const scale_0   = new Float32Array(count);
+    const scale_1   = new Float32Array(count);
+    const scale_2   = new Float32Array(count);
+    const rot_0     = new Float32Array(count);
+    const rot_1     = new Float32Array(count);
+    const rot_2     = new Float32Array(count);
+    const rot_3     = new Float32Array(count);
+    const f_dc_0    = new Float32Array(count);
+    const f_dc_1    = new Float32Array(count);
+    const f_dc_2    = new Float32Array(count);
+    const opacity   = new Float32Array(count);
+    const motion_0  = new Float32Array(count);
+    const motion_1  = new Float32Array(count);
+    const motion_2  = new Float32Array(count);
+    const trbf_center = new Float32Array(count);
+    const trbf_scale  = new Float32Array(count);
+
+    // ── 4. Decode means ───────────────────────────────────────────────────────
+    {
+        const lR = meansL.rgba, uR = meansU.rgba;
+        const mins = meta.means.mins, maxs = meta.means.maxs;
+        for (let i = 0; i < count; i++) {
+            const o = i * 4;
+            x[i] = invLogTransform(dequantize16bit(lR[o],   uR[o],   mins[0], maxs[0]));
+            y[i] = invLogTransform(dequantize16bit(lR[o+1], uR[o+1], mins[1], maxs[1]));
+            z[i] = invLogTransform(dequantize16bit(lR[o+2], uR[o+2], mins[2], maxs[2]));
+        }
+    }
+    console.log('  ✅ Means decoded');
+
+    // ── 5. Decode quaternions ─────────────────────────────────────────────────
+    {
+        const qR = quatsData.rgba;
+        for (let i = 0; i < count; i++) {
+            const o = i * 4;
+            const tag = qR[o+3];
+            if (tag < 252 || tag > 255) {
+                rot_0[i] = 1; rot_1[i] = 0; rot_2[i] = 0; rot_3[i] = 0;
+                continue;
+            }
+            const [q0, q1, q2, q3] = unpackQuat(qR[o], qR[o+1], qR[o+2], tag);
+            // SOG format WXYZ convention: comps[0]=w, comps[1]=x, comps[2]=y, comps[3]=z
+            rot_0[i] = q0; rot_1[i] = q1; rot_2[i] = q2; rot_3[i] = q3;
+        }
+    }
+    console.log('  ✅ Quaternions decoded');
+
+    // ── 6. Decode scales ──────────────────────────────────────────────────────
+    {
+        const sR = scalesData.rgba;
+        const book = new Float32Array(meta.scales.codebook);
+        for (let i = 0; i < count; i++) {
+            const o = i * 4;
+            scale_0[i] = book[sR[o]];
+            scale_1[i] = book[sR[o+1]];
+            scale_2[i] = book[sR[o+2]];
+        }
+    }
+    console.log('  ✅ Scales decoded');
+
+    // ── 7. Decode colours / opacity ───────────────────────────────────────────
+    {
+        const cR = sh0Data.rgba;
+        const book = new Float32Array(meta.sh0.codebook);
+        for (let i = 0; i < count; i++) {
+            const o = i * 4;
+            f_dc_0[i] = book[cR[o]];
+            f_dc_1[i] = book[cR[o+1]];
+            f_dc_2[i] = book[cR[o+2]];
+            opacity[i] = sigmoidInv(cR[o+3] / 255);
+        }
+    }
+    console.log('  ✅ Colours/opacity decoded');
+
+    // ── 8. Decode motion ──────────────────────────────────────────────────────
+    {
+        const lR = motionL.rgba, uR = motionU.rgba;
+        const mins = meta.motion.mins, maxs = meta.motion.maxs;
+        for (let i = 0; i < count; i++) {
+            const o = i * 4;
+            motion_0[i] = invLogTransform(dequantize16bit(lR[o],   uR[o],   mins[0], maxs[0]));
+            motion_1[i] = invLogTransform(dequantize16bit(lR[o+1], uR[o+1], mins[1], maxs[1]));
+            motion_2[i] = invLogTransform(dequantize16bit(lR[o+2], uR[o+2], mins[2], maxs[2]));
+        }
+    }
+    console.log('  ✅ Motion decoded');
+
+    // ── 9. Decode TRBF ────────────────────────────────────────────────────────
+    if (trbfIsKmeans && trbfData) {
+        const tR = trbfData.rgba;
+        const cBook = new Float32Array(meta.trbf.center_codebook!);
+        const sBook = new Float32Array(meta.trbf.scale_codebook!);
+        for (let i = 0; i < count; i++) {
+            const o = i * 4;
+            trbf_center[i] = cBook[tR[o]];
+            trbf_scale[i]  = Math.exp(sBook[tR[o+1]]);
+        }
+    } else if (trbfL && trbfU) {
+        const lR = trbfL.rgba, uR = trbfU.rgba;
+        for (let i = 0; i < count; i++) {
+            const o = i * 4;
+            trbf_center[i] = dequantize16bit(lR[o],   uR[o],   meta.trbf.center_min!, meta.trbf.center_max!);
+            trbf_scale[i]  = Math.exp(dequantize16bit(lR[o+1], uR[o+1], meta.trbf.scale_min!, meta.trbf.scale_max!));
+        }
+    }
+    console.log('  ✅ TRBF decoded');
+
+    // ── 10. Load segment files directly from the outer ZIP ────────────────────
+    const segmentsStartTime = performance.now();
+    const zipEntries = new Map<string, ArrayBuffer>();
+    for (const segment of meta.segments) {
+        // segment.url is relative to the dynamic/ folder (e.g. 'segments/seg_000.act')
+        const entryPath = `${folderName}/${segment.url}`;
+        const entry = zip.file(entryPath);
+        if (!entry) throw new Error(`Missing segment file: ${entryPath}`);
+        const data = await entry.async('arraybuffer') as ArrayBuffer;
+        zipEntries.set(segment.url, data);
+    }
+    console.log(`⏱️  Segments loading (${meta.segments.length} segments): ${(performance.now() - segmentsStartTime).toFixed(2)}ms`);
+
+    // ── 11. Build GSplatData ──────────────────────────────────────────────────
+    console.log('🔄 Building GSplatData...');
+    const gsplatData = new GSplatData([{
+        name: 'vertex',
+        count,
+        properties: [
+            { type: 'float', name: 'x',           storage: x,           byteSize: 4 },
+            { type: 'float', name: 'y',           storage: y,           byteSize: 4 },
+            { type: 'float', name: 'z',           storage: z,           byteSize: 4 },
+            { type: 'float', name: 'scale_0',     storage: scale_0,     byteSize: 4 },
+            { type: 'float', name: 'scale_1',     storage: scale_1,     byteSize: 4 },
+            { type: 'float', name: 'scale_2',     storage: scale_2,     byteSize: 4 },
+            { type: 'float', name: 'rot_0',       storage: rot_0,       byteSize: 4 },
+            { type: 'float', name: 'rot_1',       storage: rot_1,       byteSize: 4 },
+            { type: 'float', name: 'rot_2',       storage: rot_2,       byteSize: 4 },
+            { type: 'float', name: 'rot_3',       storage: rot_3,       byteSize: 4 },
+            { type: 'float', name: 'f_dc_0',      storage: f_dc_0,      byteSize: 4 },
+            { type: 'float', name: 'f_dc_1',      storage: f_dc_1,      byteSize: 4 },
+            { type: 'float', name: 'f_dc_2',      storage: f_dc_2,      byteSize: 4 },
+            { type: 'float', name: 'opacity',     storage: opacity,     byteSize: 4 },
+            { type: 'float', name: 'motion_0',    storage: motion_0,    byteSize: 4 },
+            { type: 'float', name: 'motion_1',    storage: motion_1,    byteSize: 4 },
+            { type: 'float', name: 'motion_2',    storage: motion_2,    byteSize: 4 },
+            { type: 'float', name: 'trbf_center', storage: trbf_center, byteSize: 4 },
+            { type: 'float', name: 'trbf_scale',  storage: trbf_scale,  byteSize: 4 }
+        ] as any[]
+    }]);
+
+    console.log(`✅ GSplatData built: ${gsplatData.numSplats} splats`);
+
+    // ── 12. Create DynamicGSplatResource ─────────────────────────────────────
+    const dynManifest: DynManifest = {
+        version: meta.version,
+        type: 'dyn',
+        start: meta.start,
+        duration: meta.duration,
+        fps: meta.fps,
+        sh_degree: meta.sh_degree,
+        global: { url: '', numSplats: count },
+        segments: meta.segments
+    };
+
+    console.log('🔄 Creating DynamicGSplatResource...');
+    let resource: DynamicGSplatResource;
+    try {
+        resource = new DynamicGSplatResource(device, gsplatData);
+    } catch (e: any) {
+        console.error('❌ DynamicGSplatResource creation FAILED');
+        console.error('Error:', e?.message ?? e);
+        console.error('Stack:', e?.stack ?? '(no stack)');
+        throw e;
+    }
+    console.log('✅ DynamicGSplatResource created');
+    (resource as any).hasVisibilitySH = resource.hasVisibilitySH;
+    (resource as any).dynManifest     = dynManifest;
+    (resource as any).dynBaseUrl      = '';
+    (resource as any).sog4dSegments   = zipEntries;
+
+    // ── 13. Wrap in Asset and return ─────────────────────────────────────────
+    const filename = assetFilename || 'dynamic.sog4d';
+    const asset = new Asset(filename, 'gsplat', { url: `local-asset-${getNextAssetId()}`, filename } as any);
+    asset.resource = resource;
+    assets.add(asset);
+    (asset as any)._loaded  = true;
+    (asset as any)._loading = false;
+
+    // Handle cubemap if present
+    const cubemapData = meta.cubemap ? await (async () => {
+        const cubemapEntry = zip.file(`${folderName}/${meta.cubemap!.file}`);
+        if (!cubemapEntry) return undefined;
+        return await cubemapEntry.async('arraybuffer') as ArrayBuffer;
+    })() : undefined;
+
+    return new Promise<Asset>((resolve) => {
+        setTimeout(async () => {
+            const totalTime = performance.now() - totalStartTime;
+            console.log(`✅ Dynamic SOG4D parsing complete (${totalTime.toFixed(2)}ms)`);
+            asset.fire('load', asset);
+
+            if (cubemapData && meta.cubemap && events) {
+                try {
+                    const ext = meta.cubemap.file.toLowerCase().split('.').pop();
+                    const mime = ext === 'webp' ? 'image/webp' : ext === 'png' ? 'image/png' : 'image/jpeg';
+                    const file = new File([new Blob([cubemapData], { type: mime })], meta.cubemap.file, { type: mime });
+                    await events.invoke('background.importFromFile', file);
+                    await events.invoke('background.autoShow', meta.cubemap.file);
+                } catch (e) {
+                    console.warn('⚠️  Failed to auto-load cubemap:', e);
+                }
+            }
+
+            resolve(asset);
+        }, 0);
+    });
+};
+
+/**
  * Parse multi-splat SOG4D file and load all splats
- * This function extracts each splat as a separate virtual SOG4D/SOG file and loads them
  */
 const parseSog4dMulti = async (zip: any, mainMeta: any, assetSource: AssetSource, assets: AssetRegistry, device: any, events?: any): Promise<Asset[]> => {
     console.log('📦 Parsing multi-splat SOG4D file...');
@@ -665,45 +1104,13 @@ const parseSog4dMulti = async (zip: any, mainMeta: any, assetSource: AssetSource
         const staticNames = Object.keys(mainMeta.static);
         for (const staticName of staticNames) {
             console.log(`🔄 Loading ${staticName}...`);
-            
-            // Extract static folder as a virtual SOG file
-            // Check if static folder exists
+
             const hasStaticFiles = Object.keys(zip.files).some((path: string) => path.startsWith(`${staticName}/`));
             if (!hasStaticFiles) {
                 throw new Error(`Missing ${staticName}/ folder in multi-splat SOG4D`);
             }
-            
-            const staticZip = new JSZip();
-            const staticFilePromises: Promise<void>[] = [];
-            
-            // Iterate over all files in the main zip and filter by path starting with staticName/
-            Object.keys(zip.files).forEach((path: string) => {
-                if (path.startsWith(`${staticName}/`) && !path.endsWith('/')) {
-                    const file = zip.file(path);
-                    if (file) {
-                        const cleanPath = path.replace(new RegExp(`^${staticName}/`), '');
-                        const promise = file.async('arraybuffer').then((data: ArrayBuffer) => {
-                            staticZip.file(cleanPath, data);
-                        });
-                        staticFilePromises.push(promise);
-                    }
-                }
-            });
-            
-            await Promise.all(staticFilePromises);
-            const staticZipBlob = await staticZip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
-            const staticZipArrayBuffer = await staticZipBlob.arrayBuffer();
-            
-            // Create virtual asset source
-            const virtualStaticSource: AssetSource = {
-                filename: `${staticName}.sog`,
-                url: '',
-                contents: staticZipArrayBuffer
-            };
-            
-            // Load static SOG using GSplat loader (which handles SOG format)
-            const { loadGsplat } = await import('./gsplat');
-            const staticAsset = await loadGsplat(assets, virtualStaticSource);
+
+            const staticAsset = await parseStaticSogFolder(zip, staticName, assets, device);
             loadedAssets.push(staticAsset);
         }
     }
@@ -711,45 +1118,16 @@ const parseSog4dMulti = async (zip: any, mainMeta: any, assetSource: AssetSource
     // Load dynamic splat LAST (so it will be selected automatically)
     if (mainMeta.dynamic) {
         console.log('🔄 Loading dynamic splat...');
-        
-        // Extract dynamic/ folder as a virtual SOG4D file
-        // Check if dynamic folder exists by checking for any file starting with 'dynamic/'
+
         const hasDynamicFiles = Object.keys(zip.files).some((path: string) => path.startsWith('dynamic/'));
         if (!hasDynamicFiles) {
             throw new Error('Missing dynamic/ folder in multi-splat SOG4D');
         }
-        
-        // Create a virtual ZIP from dynamic folder
-        const dynamicZip = new JSZip();
-        const dynamicFilePromises: Promise<void>[] = [];
-        
-        // Iterate over all files in the main zip and filter by path starting with 'dynamic/'
-        Object.keys(zip.files).forEach((path: string) => {
-            if (path.startsWith('dynamic/') && !path.endsWith('/')) {
-                const file = zip.file(path);
-                if (file) {
-                    const cleanPath = path.replace(/^dynamic\//, '');
-                    const promise = file.async('arraybuffer').then((data: ArrayBuffer) => {
-                        dynamicZip.file(cleanPath, data);
-                    });
-                    dynamicFilePromises.push(promise);
-                }
-            }
-        });
-        
-        await Promise.all(dynamicFilePromises);
-        const dynamicZipBlob = await dynamicZip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
-        const dynamicZipArrayBuffer = await dynamicZipBlob.arrayBuffer();
-        
-        // Create virtual asset source with the extracted ZIP
-        const virtualDynamicSource: AssetSource = {
-            filename: 'dynamic.sog4d',
-            url: '',
-            contents: dynamicZipArrayBuffer
-        };
-        
-        // Load dynamic splat using existing loader
-        const dynamicAsset = await loadSog4d(assets, virtualDynamicSource, device, events);
+
+        // Parse the dynamic/ subfolder directly from the outer ZIP — no virtual-ZIP
+        // round-trip, no double-compression, filenames taken from meta.json.
+        const origFilename = assetSource.filename || 'dynamic.sog4d';
+        const dynamicAsset = await parseDynamicSogFolder(zip, 'dynamic', origFilename, assets, device, events);
         loadedAssets.push(dynamicAsset);
     }
 

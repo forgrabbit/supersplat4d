@@ -19,13 +19,9 @@ import {
     Entity,
     Mat4,
     Picker,
-    QuadRender,
     Plane,
     Ray,
     RenderTarget,
-    SEMANTIC_POSITION,
-    Shader,
-    ShaderUtils,
     Texture,
     Vec3,
     Vec4
@@ -97,8 +93,6 @@ class Camera extends Element {
     renderOverlays = true;
 
     updateCameraUniforms: () => void;
-    finalBlitShader: Shader;
-    finalBlitQuad: QuadRender;
 
     constructor() {
         super(ElementType.camera);
@@ -414,37 +408,15 @@ class Camera extends Element {
         this.setDistance(controls.initialZoom, 0);
 
         // picker
-        const { width, height } = this.scene.targetSize;
-        this.picker = new Picker(this.scene.app, width, height);
+        const initPickerWidth = Math.max(1, this.scene.targetSize.width || this.scene.graphicsDevice.width || 1);
+        const initPickerHeight = Math.max(1, this.scene.targetSize.height || this.scene.graphicsDevice.height || 1);
+        this.picker = new Picker(this.scene.app, initPickerWidth, initPickerHeight);
 
         // override buffer allocation to use our render target
         this.picker.allocateRenderTarget = () => { };
         this.picker.releaseRenderTarget = () => { };
 
         this.scene.events.on('scene.boundChanged', this.onBoundChanged, this);
-
-        this.finalBlitShader = ShaderUtils.createShader(this.scene.graphicsDevice, {
-            uniqueName: 'camera-final-blit',
-            attributes: {
-                vertex_position: SEMANTIC_POSITION
-            },
-            vertexGLSL: `
-                attribute vec2 vertex_position;
-                varying vec2 uv0;
-                void main(void) {
-                    uv0 = vertex_position * 0.5 + 0.5;
-                    gl_Position = vec4(vertex_position, 0.0, 1.0);
-                }
-            `,
-            fragmentGLSL: `
-                varying vec2 uv0;
-                uniform sampler2D blitTexture;
-                void main(void) {
-                    gl_FragColor = texture2D(blitTexture, uv0);
-                }
-            `
-        });
-        this.finalBlitQuad = new QuadRender(this.finalBlitShader);
 
         // prepare camera-specific uniforms
         this.updateCameraUniforms = () => {
@@ -520,8 +492,6 @@ class Camera extends Element {
 
         this.scene.events.off('scene.boundChanged', this.onBoundChanged, this);
 
-        this.finalBlitQuad?.destroy();
-        this.finalBlitQuad = null;
     }
 
     // handle the scene's bound changing. the camera must be configured to render
@@ -546,11 +516,21 @@ class Camera extends Element {
     // handle the viewer canvas resizing
     rebuildRenderTargets() {
         const device = this.scene.graphicsDevice;
-        const { width, height } = this.targetSize ?? this.scene.targetSize;
+        const sizeSource = this.targetSize ?? this.scene.targetSize;
+        const { width, height } = sizeSource;
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+        const directToBackbuffer = isWebGPU(device) && !this.targetSize;
         const format = this.scene.events.invoke('camera.highPrecision') ? PIXELFORMAT_RGBA16F : PIXELFORMAT_RGBA8;
 
         const rt = this.entity.camera.renderTarget;
-        if (rt && rt.width === width && rt.height === height && rt.colorBuffer.format === format) {
+        const workRt = this.workRenderTarget;
+        const rtMatches = directToBackbuffer ?
+            !rt :
+            !!rt && rt.width === width && rt.height === height && rt.colorBuffer.format === format;
+        const workRtMatches = !!workRt && workRt.width === width && workRt.height === height;
+        if (rtMatches && workRtMatches) {
             return;
         }
 
@@ -558,7 +538,10 @@ class Camera extends Element {
         if (rt) {
             rt.destroyTextureBuffers();
             rt.destroy();
-
+            this.entity.camera.renderTarget = null;
+        }
+        if (this.workRenderTarget) {
+            this.workRenderTarget.destroyTextureBuffers();
             this.workRenderTarget.destroy();
             this.workRenderTarget = null;
         }
@@ -577,16 +560,20 @@ class Camera extends Element {
             });
         };
 
-        // in with the new
-        const colorBuffer = createTexture('cameraColor', width, height, format);
-        const depthBuffer = createTexture('cameraDepth', width, height, PIXELFORMAT_DEPTH);
-        const renderTarget = new RenderTarget({
-            colorBuffer,
-            depthBuffer,
-            flipY: false,
-            autoResolve: false
-        });
-        this.entity.camera.renderTarget = renderTarget;
+        // In normal WebGPU rendering, render directly to the backbuffer.
+        if (!directToBackbuffer) {
+            const colorBuffer = createTexture('cameraColor', width, height, format);
+            const depthBuffer = createTexture('cameraDepth', width, height, PIXELFORMAT_DEPTH);
+            const renderTarget = new RenderTarget({
+                colorBuffer,
+                depthBuffer,
+                flipY: false,
+                autoResolve: false
+            });
+            this.entity.camera.renderTarget = renderTarget;
+        } else {
+            this.entity.camera.renderTarget = null;
+        }
         this.entity.camera.horizontalFov = width > height;
 
         const workColorBuffer = createTexture('workColor', width, height, PIXELFORMAT_RGBA8);
@@ -663,22 +650,14 @@ class Camera extends Element {
         const renderTarget = this.entity.camera.renderTarget;
 
         // resolve msaa buffer
-        if (renderTarget.samples > 1) {
+        if (renderTarget && renderTarget.samples > 1) {
             renderTarget.resolve(true, false);
         }
 
-        // copy render target
-        if (!this.suppressFinalBlit) {
-            if (isWebGPU(device)) {
-                device.setBlendState(BlendState.NOBLEND);
-                device.scope.resolve('blitTexture').setValue(renderTarget.colorBuffer);
-                (device as any).setRenderTarget(null);
-                (device as any).updateBegin();
-                this.finalBlitQuad.render();
-                (device as any).updateEnd();
-            } else {
-                (device as any).copyRenderTarget(renderTarget, null, true, false);
-            }
+        // copy render target (only needed when rendering into offscreen RT)
+        if (!this.suppressFinalBlit && renderTarget) {
+            device.setBlendState(BlendState.NOBLEND);
+            (device as any).copyRenderTarget(renderTarget, null, true, false);
         }
     }
 
@@ -840,6 +819,12 @@ class Camera extends Element {
 
     pickRect(x: number, y: number, width: number, height: number) {
         const device = this.scene.graphicsDevice as any;
+
+        // WebGPU does not support synchronous readPixels; return empty results to avoid crash.
+        if (isWebGPU(device)) {
+            return new Array(width * height).fill(-1);
+        }
+
         assertRawReadPixelsSupported(this.scene.graphicsDevice, 'camera.pickRect');
         const pixels = new Uint8Array(width * height * 4);
 
