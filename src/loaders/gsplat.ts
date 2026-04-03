@@ -79,8 +79,13 @@ const uploadVisibilitySH = (resource: GSplatResource, splatData: GSplatData) => 
     return true;
 };
 
+export type LoadGsplatOptions = {
+    /** From PLY `comment cfg_args: culling=...`; default 0.005 when omitted. */
+    visibilityCullThreshold?: number;
+};
+
 // use the engine to load a gsplat asset (ply, compressed.ply, sog, sog-bundle)
-const loadGsplat = (assets: AssetRegistry, assetSource: AssetSource) => {
+const loadGsplat = (assets: AssetRegistry, assetSource: AssetSource, loadOptions?: LoadGsplatOptions) => {
     const totalStartTime = performance.now();
     console.log('🔄 Loading PLY file...');
     const contents = assetSource.contents && (assetSource.contents instanceof Response ? assetSource.contents : new Response(assetSource.contents));
@@ -144,6 +149,9 @@ const loadGsplat = (assets: AssetRegistry, assetSource: AssetSource) => {
                     reject(e instanceof Error ? e : new Error(String(e)));
                     return;
                 }
+
+                const resource = asset.resource as GSplatResource;
+                (resource as any).visibilityCullThreshold = loadOptions?.visibilityCullThreshold ?? 0.005;
 
                 const totalTime = performance.now() - totalStartTime;
                 console.log(`⏱️  PLY loading total time: ${totalTime.toFixed(2)}ms`);

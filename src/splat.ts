@@ -87,6 +87,8 @@ class Splat extends Element {
     rebuildMaterial: (bands: number) => void;
 
     hasVisibilitySH = false;
+    /** Effective alpha threshold after visibility (and dynamic temporal) modulation; from PLY cfg_args or 0.005. */
+    visibilityCullThreshold = 0.005;
     private _freezeOpacityHandler: ((enabled: boolean) => void) | null = null;
 
     // Dynamic gaussian support
@@ -135,6 +137,7 @@ class Splat extends Element {
         // Check if this is a dynamic gaussian
         const resource = asset.resource as GSplatResource;
         this.hasVisibilitySH = !!(resource as any).hasVisibilitySH;
+        this.visibilityCullThreshold = (resource as any).visibilityCullThreshold ?? 0.005;
         if ((resource as any).dynManifest) {
             this.isDynamic = true;
             this.dynManifest = (resource as any).dynManifest as DynManifest;
@@ -279,6 +282,9 @@ class Splat extends Element {
                 material.setDefine('FROZEN_OPACITY', !!this.scene.events.invoke('visibility.freezeEffectiveOpacity'));
             } else {
                 material.setDefine('FROZEN_OPACITY', false);
+            }
+            if (this.hasVisibilitySH) {
+                material.setParameter('uVisibilityCullThreshold', this.visibilityCullThreshold);
             }
             material.setParameter('splatState', this.stateTexture);
             material.setParameter('splatTransform', this.transformTexture);

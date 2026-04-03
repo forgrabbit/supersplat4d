@@ -15,6 +15,13 @@ import { version } from '../package.json';
 import { BufferWriter, ProgressWriter, Writer } from './serialize/writer';
 import { ZipWriter } from './serialize/zip-writer';
 
+/** Stable decimal string for PLY `comment cfg_args: culling=...` round-trip. */
+const formatCfgArgsCulling = (value: number): string => {
+    const v = Number.isFinite(value) ? value : 0.005;
+    const t = Math.round(v * 1e8) / 1e8;
+    return `${t}`;
+};
+
 type SerializeSettings = {
     maxSHBands?: number;            // specifies the maximum number of bands to be exported
     selected?: boolean;             // only export selected gaussians. used for copy/paste
@@ -496,9 +503,12 @@ const serializePly = async (splats: Splat[], serializeSettings: SerializeSetting
         return i < [0, 9, 24, 45][maxSHBands ?? 3];
     });
 
+    const minVisibilityCulling = Math.min(...splats.map((s) => s.visibilityCullThreshold));
+
     const headerText = [
         'ply',
         'format binary_little_endian 1.0',
+        `comment cfg_args: culling=${formatCfgArgsCulling(minVisibilityCulling)}`,
         // FIXME: disable for now due to other tooling not supporting any header
         // `comment ${generatedByString}`,
         `element vertex ${totalGaussians}`,
@@ -1116,6 +1126,7 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
 export {
     Writer,
     SplatTransformCache,
+    formatCfgArgsCulling,
     serializePly,
     serializePlyCompressed,
     serializeSplat,

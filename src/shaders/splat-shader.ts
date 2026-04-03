@@ -28,6 +28,7 @@ vec3 applySaturation(vec3 color) {
 
 #ifdef HAS_VISIBILITY
 uniform vec3 uCameraPosition; // Camera position in the same space as modelCenter
+uniform float uVisibilityCullThreshold; // discard if effective alpha below this (PLY cfg_args culling)
 
 float sigmoid(float v) {
     if (v >= 0.0) {
@@ -235,7 +236,7 @@ void main(void) {
                 color.a *= visibility;
             #endif
 
-            if (color.a < 0.005) {
+            if (color.a < uVisibilityCullThreshold) {
                 gl_Position = discardVec;
                 return;
             }

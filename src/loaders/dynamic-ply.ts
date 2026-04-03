@@ -20,6 +20,8 @@ interface DynamicPlyParams {
     duration: number;
     fps: number;
     sh_degree: number;
+    /** Visibility cull threshold from PLY `cfg_args: culling=...` (default 0.005 in shader). */
+    culling?: number;
 }
 
 interface SegmentInfo {
@@ -147,6 +149,7 @@ const parsePlyHeader = async (data: ArrayBuffer): Promise<{
     isDynamic: boolean;
     cfgArgs: DynamicPlyParams | null;
     headerEndOffset: number;
+    cullingThreshold?: number;
 }> => {
     // Read first 64KB to find header
     const headerBytes = new Uint8Array(data, 0, Math.min(65536, data.byteLength));
@@ -170,10 +173,19 @@ const parsePlyHeader = async (data: ArrayBuffer): Promise<{
     
     // Parse cfg_args comment
     let cfgArgs: DynamicPlyParams | null = null;
+    let cullingThreshold: number | undefined;
     const cfgArgsMatch = header.match(/comment\s+cfg_args:\s*(.+)/i);
     
     if (cfgArgsMatch) {
         const argsText = cfgArgsMatch[1];
+        const cullingMatch = argsText.match(/culling[=\s]+([0-9.eE+-]+)/i);
+        if (cullingMatch) {
+            const v = parseFloat(cullingMatch[1]);
+            if (Number.isFinite(v) && v >= 0) {
+                cullingThreshold = v;
+            }
+        }
+
         const params: any = {};
         
         // Parse key=value or key value pairs
@@ -200,10 +212,13 @@ const parsePlyHeader = async (data: ArrayBuffer): Promise<{
                 fps: params.fps,
                 sh_degree: params.sh_degree ?? 0
             };
+            if (cullingThreshold !== undefined) {
+                cfgArgs.culling = cullingThreshold;
+            }
         }
     }
     
-    return { isDynamic, cfgArgs, headerEndOffset };
+    return { isDynamic, cfgArgs, headerEndOffset, cullingThreshold };
 };
 
 /**
@@ -213,12 +228,17 @@ const parsePlyHeader = async (data: ArrayBuffer): Promise<{
 const checkPlyIsDynamic = async (assetSource: AssetSource): Promise<{
     isDynamic: boolean;
     cfgArgs: DynamicPlyParams | null;
+    cullingThreshold?: number;
 }> => {
     // Only read first 64KB to check header
     const source = await createReadSource(assetSource, 0, 65536);
     const data = await source.arrayBuffer();
     const result = await parsePlyHeader(data);
-    return { isDynamic: result.isDynamic, cfgArgs: result.cfgArgs };
+    return {
+        isDynamic: result.isDynamic,
+        cfgArgs: result.cfgArgs,
+        cullingThreshold: result.cullingThreshold
+    };
 };
 
 // =============================================================================
@@ -572,6 +592,7 @@ const loadDynamicPly = async (
                 (resource as any).dynManifest = dynManifest;
                 (resource as any).dynBaseUrl = '';
                 (resource as any).sog4dSegments = segmentIndicesMap;
+                (resource as any).visibilityCullThreshold = params.culling ?? 0.005;
                 
                     const totalTime = performance.now() - totalStartTime;
                     console.log(`⏱️  Dynamic PLY loading total time: ${totalTime.toFixed(2)}ms`);

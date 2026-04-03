@@ -8,7 +8,7 @@ import { Splat } from './splat';
 import { State } from './splat-state';
 import type { DynamicExportOptions } from './ui/dynamic-export-dialog';
 import type { DynManifest } from './loaders/dyn';
-import { SplatTransformCache } from './splat-serialize';
+import { formatCfgArgsCulling, SplatTransformCache } from './splat-serialize';
 
 // JSZip is loaded globally via script tag
 declare const JSZip: any;
@@ -280,7 +280,7 @@ const serializeDynamicPly = async (
     }
     
     // Build header with cfg_args
-    const cfgArgs = `comment cfg_args: start=${exportStart} duration=${exportDuration} fps=${manifest.fps} sh_degree=${manifest.sh_degree || 0}`;
+    const cfgArgs = `comment cfg_args: start=${exportStart} duration=${exportDuration} fps=${manifest.fps} sh_degree=${manifest.sh_degree || 0} culling=${formatCfgArgsCulling(splat.visibilityCullThreshold)}`;
     
     const headerLines = [
         'ply',
@@ -591,7 +591,7 @@ const serializeSog4d = async (
     writer: Writer,
     progress?: (p: number, stage: string) => void
 ): Promise<void> => {
-    const { manifest, splatData } = info;
+    const { manifest, splatData, splat } = info;
     const { start: exportStart, duration: exportDuration, filename } = options;
     
     console.log(`📤 Exporting SOG4D: start=${exportStart}, duration=${exportDuration}`);
@@ -948,6 +948,7 @@ const serializeSog4d = async (
         width,
         height,
         sh_degree: manifest.sh_degree || 0,
+        culling: splat.visibilityCullThreshold,
         start: exportStart,
         duration: exportDuration,
         fps: manifest.fps,

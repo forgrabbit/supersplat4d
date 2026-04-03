@@ -603,6 +603,9 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
         (resource as any).dynManifest = dynManifest;
         (resource as any).dynBaseUrl = '';  // Not used for SOG4D
         (resource as any).sog4dSegments = zipEntries;  // Store preloaded segments
+        const cull = (meta as { culling?: number }).culling;
+        (resource as any).visibilityCullThreshold =
+            typeof cull === 'number' && Number.isFinite(cull) ? cull : 0.005;
 
         asset.resource = resource;
 

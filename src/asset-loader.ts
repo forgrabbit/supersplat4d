@@ -58,8 +58,9 @@ class AssetLoader {
                 asset = await loadSog4d(this.app.assets, assetSource, this.app.graphicsDevice, this.events);
             } else if (filename.endsWith('.ply')) {
                 // Check if PLY is dynamic (has trbf_center, trbf_scale, motion_*)
-                const { isDynamic, cfgArgs } = await checkPlyIsDynamic(assetSource);
-                
+                const { isDynamic, cfgArgs, cullingThreshold } = await checkPlyIsDynamic(assetSource);
+                const staticPlyOpts = { visibilityCullThreshold: cullingThreshold };
+
                 if (isDynamic) {
                     let params: DynamicPlyParams | null = cfgArgs;
                     
@@ -77,11 +78,11 @@ class AssetLoader {
                     } else {
                         // User cancelled, load as static
                         console.log('⚠️ User cancelled dynamic params dialog, loading as static PLY');
-                        asset = await loadGsplat(this.app.assets, assetSource);
+                        asset = await loadGsplat(this.app.assets, assetSource, staticPlyOpts);
                     }
                 } else {
-                    // Not dynamic, load as regular PLY
-                    asset = await loadGsplat(this.app.assets, assetSource);
+                    // Not dynamic, load as regular PLY (optional cfg_args culling for static visibility SH)
+                    asset = await loadGsplat(this.app.assets, assetSource, staticPlyOpts);
                 }
             } else {
                 asset = await loadGsplat(this.app.assets, assetSource);
