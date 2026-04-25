@@ -29,6 +29,21 @@ vec3 applySaturation(vec3 color) {
 #ifdef HAS_VISIBILITY
 uniform vec3 uCameraPosition; // Camera position in the same space as modelCenter
 uniform float uVisibilityCullThreshold; // discard if effective alpha below this (PLY cfg_args culling)
+uniform sampler2D splatFrozenOpacity;
+
+    #ifdef HAS_VISIBILITY_SH
+uniform sampler2D splatVisibilitySH0;
+uniform sampler2D splatVisibilitySH1;
+uniform sampler2D splatVisibilitySH2;
+uniform sampler2D splatVisibilitySH3;
+    #endif
+
+    #ifdef HAS_VISIBILITY_SV
+uniform sampler2D splatVisibilitySVSiteValue;
+uniform sampler2D splatVisibilitySVTau;
+uniform float uVisibilitySVLobeStride;
+uniform float uVisibilitySVPackAxis;
+    #endif
 
 float sigmoid(float v) {
     if (v >= 0.0) {
@@ -38,11 +53,20 @@ float sigmoid(float v) {
     return t / (1.0 + t);
 }
 
+float softplus(float v) {
+    return log(1.0 + exp(-abs(v))) + max(v, 0.0);
+}
+
+vec3 safeNormalizeVec3(vec3 v) {
+    return v * inversesqrt(max(dot(v, v), 1e-12));
+}
+
+#ifdef HAS_VISIBILITY_SH
 float evalVisibilitySHDeg3(vec3 d) {
-    vec4 sh0 = loadSplatVisibilitySH0();
-    vec4 sh1 = loadSplatVisibilitySH1();
-    vec4 sh2 = loadSplatVisibilitySH2();
-    vec4 sh3 = loadSplatVisibilitySH3();
+    vec4 sh0 = texelFetch(splatVisibilitySH0, splat.uv, 0);
+    vec4 sh1 = texelFetch(splatVisibilitySH1, splat.uv, 0);
+    vec4 sh2 = texelFetch(splatVisibilitySH2, splat.uv, 0);
+    vec4 sh3 = texelFetch(splatVisibilitySH3, splat.uv, 0);
 
     float x = d.x;
     float y = d.y;
@@ -93,6 +117,54 @@ float evalVisibilitySHDeg3(vec3 d) {
     r += C3_6 * x * (xx - 3.0 * yy) * sh3.w;
 
     return r;
+}
+#endif
+
+#ifdef HAS_VISIBILITY_SV
+ivec2 visibilitySVUv(int lobe) {
+    int stride = int(uVisibilitySVLobeStride + 0.5);
+    if (uVisibilitySVPackAxis < 0.5) {
+        return ivec2(splat.uv.x, splat.uv.y + lobe * stride);
+    }
+
+    return ivec2(splat.uv.x + lobe * stride, splat.uv.y);
+}
+
+float evalVisibilitySVDeg3(vec3 d) {
+    vec3 dir = safeNormalizeVec3(d);
+    float logits[VISIBILITY_SV_LOBES];
+    float values[VISIBILITY_SV_LOBES];
+    float maxLogit = -1.0e30;
+
+    for (int lobe = 0; lobe < VISIBILITY_SV_LOBES; ++lobe) {
+        ivec2 uv = visibilitySVUv(lobe);
+        vec4 siteValue = texelFetch(splatVisibilitySVSiteValue, uv, 0);
+        float tauRaw = texelFetch(splatVisibilitySVTau, uv, 0).r;
+        vec3 site = safeNormalizeVec3(siteValue.xyz);
+        float logit = -softplus(tauRaw) * length(site - dir);
+        logits[lobe] = logit;
+        values[lobe] = siteValue.w;
+        maxLogit = max(maxLogit, logit);
+    }
+
+    float weightedValue = 0.0;
+    float totalWeight = 0.0;
+    for (int lobe = 0; lobe < VISIBILITY_SV_LOBES; ++lobe) {
+        float weight = exp(logits[lobe] - maxLogit);
+        weightedValue += weight * values[lobe];
+        totalWeight += weight;
+    }
+
+    return weightedValue / max(totalWeight, 1e-6);
+}
+#endif
+
+float evalVisibilityRaw(vec3 d) {
+    #ifdef HAS_VISIBILITY_SV
+        return evalVisibilitySVDeg3(d);
+    #else
+        return evalVisibilitySHDeg3(d);
+    #endif
 }
 #endif
 
@@ -227,11 +299,11 @@ void main(void) {
 
         #ifdef HAS_VISIBILITY
             #ifdef FROZEN_OPACITY
-                color.a = loadSplatFrozenOpacity().r;
+                color.a = texelFetch(splatFrozenOpacity, splat.uv, 0).r;
             #else
                 vec3 centerForVis = uIsDynamic ? computeDynamicPosition(modelCenter) : modelCenter;
-                vec3 D_view = normalize(centerForVis - uCameraPosition);
-                float visRaw = evalVisibilitySHDeg3(D_view);
+                vec3 D_view = safeNormalizeVec3(centerForVis - uCameraPosition);
+                float visRaw = evalVisibilityRaw(D_view);
                 float visibility = sigmoid(visRaw);
                 color.a *= visibility;
             #endif

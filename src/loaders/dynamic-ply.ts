@@ -142,6 +142,86 @@ const parseAndAddDynamicProperties = async (splatData: GSplatData, rawData: Arra
     console.log('✅ Dynamic properties parsed and added successfully');
 };
 
+const parseAndAddCustomVisibilityProperties = async (splatData: GSplatData, rawData: ArrayBuffer): Promise<void> => {
+    const headerBytes = new Uint8Array(rawData, 0, Math.min(65536, rawData.byteLength));
+    const headerText = new TextDecoder('ascii').decode(headerBytes);
+
+    const endHeaderIndex = headerText.indexOf('end_header');
+    if (endHeaderIndex === -1) {
+        throw new Error('Invalid PLY: missing end_header');
+    }
+
+    const header = headerText.substring(0, endHeaderIndex);
+    const headerEndOffset = endHeaderIndex + 'end_header'.length + 1;
+    const propertyLines = header.split('\n').filter(line => line.trim().startsWith('property'));
+    const properties: Array<{ type: string; name: string; byteSize: number }> = [];
+
+    for (const line of propertyLines) {
+        const match = line.match(/property\s+(float|uchar|double|int)\s+(\w+)/);
+        if (match) {
+            const type = match[1];
+            const name = match[2];
+            const byteSize = type === 'uchar' ? 1 : 4;
+            properties.push({ type, name, byteSize });
+        }
+    }
+
+    const vertexMatch = header.match(/element\s+vertex\s+(\d+)/);
+    if (!vertexMatch) {
+        throw new Error('Invalid PLY: missing vertex element');
+    }
+
+    const vertexCount = parseInt(vertexMatch[1], 10);
+    const bytesPerVertex = properties.reduce((sum, p) => sum + p.byteSize, 0);
+    const dataView = new DataView(rawData, headerEndOffset);
+
+    const customProps = properties.filter((prop) => {
+        if (prop.type !== 'float') {
+            return false;
+        }
+
+        return prop.name.startsWith('v_sh_') ||
+            prop.name.startsWith('v_site_') ||
+            prop.name.startsWith('v_val_') ||
+            prop.name.startsWith('v_tau_');
+    });
+
+    if (customProps.length === 0) {
+        return;
+    }
+
+    console.log(`Parsing ${customProps.length} visibility properties from ${vertexCount} vertices...`);
+
+    const propData = new Map<string, Float32Array>();
+    for (const prop of customProps) {
+        propData.set(prop.name, new Float32Array(vertexCount));
+    }
+
+    for (let v = 0; v < vertexCount; v++) {
+        let offset = v * bytesPerVertex;
+
+        for (let p = 0; p < properties.length; p++) {
+            const prop = properties[p];
+            if (propData.has(prop.name)) {
+                propData.get(prop.name)![v] = dataView.getFloat32(offset, true);
+            }
+            offset += prop.byteSize;
+        }
+    }
+
+    const vertexElement = splatData.getElement('vertex');
+    for (const [propName, storage] of propData.entries()) {
+        if (!splatData.getProp(propName)) {
+            vertexElement.properties.push({
+                type: 'float',
+                name: propName,
+                storage,
+                byteSize: 4
+            });
+        }
+    }
+};
+
 /**
  * Parse PLY header to check for dynamic properties and cfg_args
  */
@@ -410,8 +490,9 @@ const loadDynamicPly = async (
                 // CRITICAL FIX: PlayCanvas only loads standard properties
                 // We need to manually parse custom dynamic properties from the cached raw PLY data
                 if (cachedRawData) {
-                    console.log('🔧 Manually parsing dynamic properties from PLY...');
+                    console.log('🔧 Manually parsing dynamic and visibility properties from PLY...');
                     await parseAndAddDynamicProperties(splatData, cachedRawData);
+                    await parseAndAddCustomVisibilityProperties(splatData, cachedRawData);
                 } else {
                     console.warn('⚠️  No cached raw data available for parsing dynamic properties');
                 }
@@ -489,11 +570,17 @@ const loadDynamicPly = async (
                     const splatData = (asset.resource as GSplatResource).gsplatData as GSplatData;
                     
                     let segments: SegmentInfo[];
+                    const fallbackRawData = cachedRawData;
                     
                     // FALLBACK: If load:data didn't process (first load issue), process here
                     if (!computedSegments) {
                         console.warn('⚠️  load:data did not process segments, handling in load event (first load issue)');
                         
+                        if (fallbackRawData) {
+                            void parseAndAddDynamicProperties(splatData, fallbackRawData);
+                            void parseAndAddCustomVisibilityProperties(splatData, fallbackRawData);
+                        }
+
                         // DEBUG: Log all available properties
                         const vertexElem = splatData.getElement('vertex');
                         const allPropertyNames = vertexElem.properties.map((p: any) => p.name);

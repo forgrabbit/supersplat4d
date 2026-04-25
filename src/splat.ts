@@ -5,6 +5,7 @@ import {
     BLENDMODE_ONE_MINUS_SRC_ALPHA,
     FILTER_NEAREST,
     PIXELFORMAT_R8,
+    PIXELFORMAT_R32F,
     PIXELFORMAT_R16U,
     PIXELFORMAT_RGBA32F,
     Asset,
@@ -28,6 +29,7 @@ import { vertexShader, fragmentShader, gsplatCenter } from './shaders/splat-shad
 import { State } from './splat-state';
 import { Transform } from './transform';
 import { TransformPalette } from './transform-palette';
+import { readVisibilityData, type VisibilityData, type VisibilitySvData } from './visibility-data';
 
 const vec = new Vec3();
 const veca = new Vec3();
@@ -86,7 +88,16 @@ class Splat extends Element {
 
     rebuildMaterial: (bands: number) => void;
 
-    hasVisibilitySH = false;
+    hasVisibility = false;
+    visibilityMode: VisibilityData['mode'] = 'none';
+    visibilityData: VisibilityData = { mode: 'none' };
+    visibilityNumLobes = 0;
+    visibilityShTextures: Texture[] = [];
+    visibilitySVSiteValueTexture: Texture | null = null;
+    visibilitySVTauTexture: Texture | null = null;
+    visibilityFrozenOpacityTexture: Texture | null = null;
+    visibilitySVPackAxis = 0;
+    visibilitySVLobeStride = 0;
     /** Effective alpha threshold after visibility (and dynamic temporal) modulation; from PLY cfg_args or 0.005. */
     visibilityCullThreshold = 0.005;
     private _freezeOpacityHandler: ((enabled: boolean) => void) | null = null;
@@ -136,7 +147,10 @@ class Splat extends Element {
 
         // Check if this is a dynamic gaussian
         const resource = asset.resource as GSplatResource;
-        this.hasVisibilitySH = !!(resource as any).hasVisibilitySH;
+        this.visibilityData = readVisibilityData(this.splatData);
+        this.visibilityMode = this.visibilityData.mode;
+        this.hasVisibility = this.visibilityMode !== 'none';
+        this.visibilityNumLobes = this.visibilityData.mode === 'sv' ? this.visibilityData.numLobes : 0;
         this.visibilityCullThreshold = (resource as any).visibilityCullThreshold ?? 0.005;
         if ((resource as any).dynManifest) {
             this.isDynamic = true;
@@ -153,7 +167,7 @@ class Splat extends Element {
         this.entity.addComponent('gsplat', { asset });
 
         // Wait for instance to be created if needed
-        let instance = this.entity.gsplat.instance;
+        const instance = this.entity.gsplat.instance;
         if (!instance) {
             // If instance is not immediately available, it might be created asynchronously
             // Check if gsplat component exists
@@ -211,12 +225,11 @@ class Splat extends Element {
         }
         const { width, height } = splatColor;
 
-        // pack spherical harmonic data
-        const createTexture = (name: string, format: number) => {
+        const createTexture = (name: string, format: number, texWidth = width, texHeight = height) => {
             return new Texture(device, {
                 name: name,
-                width: width,
-                height: height,
+                width: texWidth,
+                height: texHeight,
                 format: format,
                 mipmaps: false,
                 minFilter: FILTER_NEAREST,
@@ -262,6 +275,94 @@ class Splat extends Element {
             this.updateDynamicTextures();
         }
 
+        if (this.hasVisibility) {
+            this.visibilityFrozenOpacityTexture = createTexture('splatFrozenOpacity', PIXELFORMAT_R32F);
+            const visibilityData = this.visibilityData;
+
+            if (visibilityData.mode === 'sh') {
+                this.visibilityShTextures = [
+                    createTexture('splatVisibilitySH0', PIXELFORMAT_RGBA32F),
+                    createTexture('splatVisibilitySH1', PIXELFORMAT_RGBA32F),
+                    createTexture('splatVisibilitySH2', PIXELFORMAT_RGBA32F),
+                    createTexture('splatVisibilitySH3', PIXELFORMAT_RGBA32F)
+                ];
+
+                const visibilitySh = visibilityData.coeffs;
+                this.visibilityShTextures.forEach((texture, textureIndex) => {
+                    const locked = texture.lock() as unknown as Float32Array | ArrayBufferView;
+                    const data = locked instanceof Float32Array ? locked : new Float32Array((locked as any).buffer);
+                    data.fill(0);
+
+                    for (let i = 0; i < this.numSplats; i++) {
+                        const o = i * 4;
+                        const coeffBase = textureIndex * 4;
+                        data[o + 0] = visibilitySh[coeffBase + 0][i];
+                        data[o + 1] = visibilitySh[coeffBase + 1][i];
+                        data[o + 2] = visibilitySh[coeffBase + 2][i];
+                        data[o + 3] = visibilitySh[coeffBase + 3][i];
+                    }
+
+                    texture.unlock();
+                });
+            } else if (visibilityData.mode === 'sv') {
+                const maxTextureSize = device.maxTextureSize;
+                const svStrideVertical = height * this.visibilityNumLobes;
+                const svStrideHorizontal = width * this.visibilityNumLobes;
+                let packedWidth = width;
+                let packedHeight = svStrideVertical;
+
+                if (packedHeight <= maxTextureSize) {
+                    this.visibilitySVPackAxis = 0;
+                    this.visibilitySVLobeStride = height;
+                } else if (svStrideHorizontal <= maxTextureSize) {
+                    this.visibilitySVPackAxis = 1;
+                    this.visibilitySVLobeStride = width;
+                    packedWidth = svStrideHorizontal;
+                    packedHeight = height;
+                } else {
+                    throw new Error(`SV visibility texture packing exceeds max texture size (${maxTextureSize})`);
+                }
+
+                const visibilitySVSiteValueTexture = createTexture('splatVisibilitySVSiteValue', PIXELFORMAT_RGBA32F, packedWidth, packedHeight);
+                const visibilitySVTauTexture = createTexture('splatVisibilitySVTau', PIXELFORMAT_R32F, packedWidth, packedHeight);
+                this.visibilitySVSiteValueTexture = visibilitySVSiteValueTexture;
+                this.visibilitySVTauTexture = visibilitySVTauTexture;
+
+                const siteValueLocked = visibilitySVSiteValueTexture.lock() as unknown as Float32Array | ArrayBufferView;
+                const siteValueData = siteValueLocked instanceof Float32Array ? siteValueLocked : new Float32Array((siteValueLocked as any).buffer);
+                const tauLocked = visibilitySVTauTexture.lock() as unknown as Float32Array | ArrayBufferView;
+                const tauData = tauLocked instanceof Float32Array ? tauLocked : new Float32Array((tauLocked as any).buffer);
+                siteValueData.fill(0);
+                tauData.fill(0);
+
+                for (let i = 0; i < this.numSplats; i++) {
+                    const baseX = i % width;
+                    const baseY = Math.floor(i / width);
+
+                    for (let lobeIndex = 0; lobeIndex < visibilityData.numLobes; lobeIndex++) {
+                        const lobe = visibilityData.lobes[lobeIndex];
+                        const siteX = lobe.siteX[i];
+                        const siteY = lobe.siteY[i];
+                        const siteZ = lobe.siteZ[i];
+                        const siteLen = Math.max(1e-6, Math.sqrt(siteX * siteX + siteY * siteY + siteZ * siteZ));
+                        const packedX = this.visibilitySVPackAxis === 0 ? baseX : baseX + lobeIndex * width;
+                        const packedY = this.visibilitySVPackAxis === 0 ? baseY + lobeIndex * height : baseY;
+                        const packedIndex = packedY * packedWidth + packedX;
+                        const siteValueOffset = packedIndex * 4;
+
+                        siteValueData[siteValueOffset + 0] = siteX / siteLen;
+                        siteValueData[siteValueOffset + 1] = siteY / siteLen;
+                        siteValueData[siteValueOffset + 2] = siteZ / siteLen;
+                        siteValueData[siteValueOffset + 3] = lobe.value[i];
+                        tauData[packedIndex] = lobe.tau[i];
+                    }
+                }
+
+                visibilitySVSiteValueTexture.unlock();
+                visibilitySVTauTexture.unlock();
+            }
+        }
+
         // create the transform palette
         this.transformPalette = new TransformPalette(device);
 
@@ -277,14 +378,34 @@ class Splat extends Element {
             glsl.set('gsplatCenterVS', gsplatCenter);
 
             material.setDefine('SH_BANDS', `${Math.min(bands, (instance.resource as GSplatResource).shBands)}`);
-            material.setDefine('HAS_VISIBILITY', this.hasVisibilitySH);
-            if (this.hasVisibilitySH && this.scene) {
+            material.setDefine('HAS_VISIBILITY', this.hasVisibility);
+            material.setDefine('HAS_VISIBILITY_SH', this.visibilityMode === 'sh');
+            material.setDefine('HAS_VISIBILITY_SV', this.visibilityMode === 'sv');
+            material.setDefine('VISIBILITY_SV_LOBES', this.visibilityMode === 'sv' ? `${this.visibilityNumLobes}` : '0');
+            if (this.hasVisibility && this.scene) {
                 material.setDefine('FROZEN_OPACITY', !!this.scene.events.invoke('visibility.freezeEffectiveOpacity'));
             } else {
                 material.setDefine('FROZEN_OPACITY', false);
             }
-            if (this.hasVisibilitySH) {
+            if (this.hasVisibility) {
                 material.setParameter('uVisibilityCullThreshold', this.visibilityCullThreshold);
+                if (this.visibilityFrozenOpacityTexture) {
+                    material.setParameter('splatFrozenOpacity', this.visibilityFrozenOpacityTexture);
+                }
+                if (this.visibilityMode === 'sh') {
+                    this.visibilityShTextures.forEach((texture, textureIndex) => {
+                        material.setParameter(`splatVisibilitySH${textureIndex}`, texture);
+                    });
+                } else if (this.visibilityMode === 'sv') {
+                    if (this.visibilitySVSiteValueTexture) {
+                        material.setParameter('splatVisibilitySVSiteValue', this.visibilitySVSiteValueTexture);
+                    }
+                    if (this.visibilitySVTauTexture) {
+                        material.setParameter('splatVisibilitySVTau', this.visibilitySVTauTexture);
+                    }
+                    material.setParameter('uVisibilitySVLobeStride', this.visibilitySVLobeStride);
+                    material.setParameter('uVisibilitySVPackAxis', this.visibilitySVPackAxis);
+                }
             }
             material.setParameter('splatState', this.stateTexture);
             material.setParameter('splatTransform', this.transformTexture);
@@ -328,7 +449,7 @@ class Splat extends Element {
                 
                 // Now that sorting is complete, update the shader time
                 // This ensures rendering uses the same time as sorting
-                if (this.isDynamic && this.lastSortedTime === this.lastSortedTime) { // not NaN
+                if (this.isDynamic && !Number.isNaN(this.lastSortedTime)) {
                     instance.material.setParameter('uCurrentTime', this.lastSortedTime);
                 }
                 
@@ -364,6 +485,16 @@ class Splat extends Element {
         }
         if (this.trbfTexture) {
             this.trbfTexture.destroy();
+        }
+        this.visibilityShTextures.forEach(texture => texture.destroy());
+        if (this.visibilitySVSiteValueTexture) {
+            this.visibilitySVSiteValueTexture.destroy();
+        }
+        if (this.visibilitySVTauTexture) {
+            this.visibilitySVTauTexture.destroy();
+        }
+        if (this.visibilityFrozenOpacityTexture) {
+            this.visibilityFrozenOpacityTexture.destroy();
         }
     }
 
@@ -730,7 +861,7 @@ class Splat extends Element {
         this.scene.events.on('view.bands', this.rebuildMaterial, this);
         this.rebuildMaterial(this.scene.events.invoke('view.bands'));
 
-        if (this.hasVisibilitySH) {
+        if (this.hasVisibility) {
             const initialFrozen = !!this.scene.events.invoke('visibility.freezeEffectiveOpacity');
             if (initialFrozen) {
                 this.freezeEffectiveOpacity();
@@ -816,6 +947,10 @@ class Splat extends Element {
         return t / (1 + t);
     }
 
+    private softplus(v: number) {
+        return Math.log1p(Math.exp(-Math.abs(v))) + Math.max(v, 0);
+    }
+
     private evalVisibilitySHDeg3(dx: number, dy: number, dz: number, sh: Float32Array[], i: number) {
         const x = dx;
         const y = dy;
@@ -863,13 +998,46 @@ class Splat extends Element {
         return r;
     }
 
+    private evalVisibilitySVDeg3(dx: number, dy: number, dz: number, visibilitySv: VisibilitySvData, i: number) {
+        const dirLen = Math.max(1e-6, Math.sqrt(dx * dx + dy * dy + dz * dz));
+        const vx = dx / dirLen;
+        const vy = dy / dirLen;
+        const vz = dz / dirLen;
+
+        const logits = new Array<number>(visibilitySv.numLobes);
+        let maxLogit = -Infinity;
+        for (let lobeIndex = 0; lobeIndex < visibilitySv.numLobes; lobeIndex++) {
+            const lobe = visibilitySv.lobes[lobeIndex];
+            const siteX = lobe.siteX[i];
+            const siteY = lobe.siteY[i];
+            const siteZ = lobe.siteZ[i];
+            const siteLen = Math.max(1e-6, Math.sqrt(siteX * siteX + siteY * siteY + siteZ * siteZ));
+            const sx = siteX / siteLen;
+            const sy = siteY / siteLen;
+            const sz = siteZ / siteLen;
+            const dist = Math.sqrt((sx - vx) * (sx - vx) + (sy - vy) * (sy - vy) + (sz - vz) * (sz - vz));
+            const logit = -this.softplus(lobe.tau[i]) * dist;
+            logits[lobeIndex] = logit;
+            maxLogit = Math.max(maxLogit, logit);
+        }
+
+        let weightedValue = 0;
+        let totalWeight = 0;
+        for (let lobeIndex = 0; lobeIndex < visibilitySv.numLobes; lobeIndex++) {
+            const weight = Math.exp(logits[lobeIndex] - maxLogit);
+            weightedValue += weight * visibilitySv.lobes[lobeIndex].value[i];
+            totalWeight += weight;
+        }
+
+        return weightedValue / Math.max(totalWeight, 1e-6);
+    }
+
     freezeEffectiveOpacity() {
-        if (!this.hasVisibilitySH) {
+        if (!this.hasVisibility) {
             return;
         }
 
-        const resource = this.asset.resource as GSplatResource;
-        const frozenTex = (resource as any).streams?.getTexture?.('splatFrozenOpacity') as Texture | undefined;
+        const frozenTex = this.visibilityFrozenOpacityTexture ?? undefined;
         if (!frozenTex) {
             throw new Error('Frozen opacity texture not available');
         }
@@ -885,14 +1053,7 @@ class Splat extends Element {
         const trbfCenter = this.splatData.getProp('trbf_center') as Float32Array | null;
         const trbfScale = this.splatData.getProp('trbf_scale') as Float32Array | null;
 
-        const sh: Float32Array[] = [];
-        for (let k = 0; k < 16; k++) {
-            const arr = this.splatData.getProp(`v_sh_${k}`) as Float32Array | null;
-            if (!arr) {
-                throw new Error(`Missing visibility SH property v_sh_${k}`);
-            }
-            sh.push(arr);
-        }
+        const visibilityData = this.visibilityData;
 
         // Camera position in model space (same space as x/y/z)
         const camWorld = this.scene.camera.entity.getPosition();
@@ -911,7 +1072,7 @@ class Splat extends Element {
         let t_abs = 0;
         if (useDynamic) {
             // Prefer the actual time used for rendering (stable playback), fallback to timeline time.
-            if (this.lastSortedTime === this.lastSortedTime) {
+            if (!Number.isNaN(this.lastSortedTime)) {
                 t_abs = this.lastSortedTime;
             } else {
                 const events = this.scene.events;
@@ -940,9 +1101,9 @@ class Splat extends Element {
                 const dt = t_abs - (trbfCenter as Float32Array)[i];
 
                 // Match shader center: p(t) = p0 + motion * dt
-                cx = cx + (motion0 as Float32Array)[i] * dt;
-                cy = cy + (motion1 as Float32Array)[i] * dt;
-                cz = cz + (motion2 as Float32Array)[i] * dt;
+                cx += (motion0 as Float32Array)[i] * dt;
+                cy += (motion1 as Float32Array)[i] * dt;
+                cz += (motion2 as Float32Array)[i] * dt;
 
                 // Match shader dynamic opacity: exp(-dt_scaled^2)
                 const ts = Math.max((trbfScale as Float32Array)[i], 1e-6);
@@ -959,7 +1120,12 @@ class Splat extends Element {
             const vy = dy * invLen;
             const vz = dz * invLen;
 
-            const visRaw = this.evalVisibilitySHDeg3(vx, vy, vz, sh, i);
+            let visRaw = 0;
+            if (visibilityData.mode === 'sv') {
+                visRaw = this.evalVisibilitySVDeg3(vx, vy, vz, visibilityData, i);
+            } else if (visibilityData.mode === 'sh') {
+                visRaw = this.evalVisibilitySHDeg3(vx, vy, vz, visibilityData.coeffs, i);
+            }
             const visibility = this.sigmoid(visRaw);
             const opEff = visibility * opBefore;
 
@@ -1058,7 +1224,7 @@ class Splat extends Element {
         const cameraOverlay = events.invoke('camera.overlay');
         const material = this.entity.gsplat.instance.material;
 
-        if (this.hasVisibilitySH) {
+        if (this.hasVisibility) {
             const frozen = !!events.invoke('visibility.freezeEffectiveOpacity');
             if (!frozen) {
                 const camWorld = this.scene.camera.entity.getPosition();

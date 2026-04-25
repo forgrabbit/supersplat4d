@@ -1,83 +1,7 @@
-import { Asset, AssetRegistry, GSplatData, GSplatResource, PIXELFORMAT_R32F, PIXELFORMAT_RGBA32F } from 'playcanvas';
+import { Asset, AssetRegistry, GSplatData, GSplatResource } from 'playcanvas';
 
 import { getNextAssetId } from './asset-id-counter';
 import { AssetSource } from './asset-source';
-
-const uploadVisibilitySH = (resource: GSplatResource, splatData: GSplatData) => {
-    const v0 = splatData.getProp('v_sh_0') as Float32Array | null;
-    if (!v0) {
-        return false;
-    }
-
-    const format = (resource as any).format;
-    if (!format || typeof (format as any).addExtraStreams !== 'function') {
-        // Older PlayCanvas GSplatFormat does not support extra streams.
-        // In this case we skip GPU visibility integration and fall back
-        // to standard opacity-only rendering.
-        // This keeps loading working even on older engine versions.
-        console.warn('GSplat format does not support extra streams; visibility SH will be ignored for this asset.');
-        return false;
-    }
-
-    format.addExtraStreams([
-        { name: 'splatVisibilitySH0', format: PIXELFORMAT_RGBA32F },
-        { name: 'splatVisibilitySH1', format: PIXELFORMAT_RGBA32F },
-        { name: 'splatVisibilitySH2', format: PIXELFORMAT_RGBA32F },
-        { name: 'splatVisibilitySH3', format: PIXELFORMAT_RGBA32F },
-        { name: 'splatFrozenOpacity', format: PIXELFORMAT_R32F }
-    ]);
-
-    const streams = (resource as any).streams;
-    if (!streams?.syncWithFormat) {
-        throw new Error('GSplat resource streams cannot sync with format');
-    }
-    streams.syncWithFormat(format);
-
-    const tex0 = streams.getTexture('splatVisibilitySH0');
-    const tex1 = streams.getTexture('splatVisibilitySH1');
-    const tex2 = streams.getTexture('splatVisibilitySH2');
-    const tex3 = streams.getTexture('splatVisibilitySH3');
-
-    if (!tex0 || !tex1 || !tex2 || !tex3) {
-        throw new Error('Visibility SH textures were not created');
-    }
-
-    const v: Float32Array[] = [];
-    for (let i = 0; i < 16; i++) {
-        const arr = splatData.getProp(`v_sh_${i}`) as Float32Array | null;
-        if (!arr) {
-            throw new Error(`Missing visibility SH property v_sh_${i}`);
-        }
-        v.push(arr);
-    }
-
-    const numSplats = splatData.numSplats;
-
-    const fillTex = (tex: any, baseCoeff: number) => {
-        const locked = tex.lock() as unknown as Float32Array | ArrayBufferView;
-        const data = locked instanceof Float32Array ? locked : new Float32Array((locked as any).buffer);
-
-        data.fill(0);
-
-        for (let i = 0; i < numSplats; i++) {
-            const o = i * 4;
-            data[o + 0] = v[baseCoeff + 0][i];
-            data[o + 1] = v[baseCoeff + 1][i];
-            data[o + 2] = v[baseCoeff + 2][i];
-            data[o + 3] = v[baseCoeff + 3][i];
-        }
-
-        tex.unlock();
-    };
-
-    fillTex(tex0, 0);
-    fillTex(tex1, 4);
-    fillTex(tex2, 8);
-    fillTex(tex3, 12);
-
-    (resource as any).hasVisibilitySH = true;
-    return true;
-};
 
 export type LoadGsplatOptions = {
     /** From PLY `comment cfg_args: culling=...`; default 0.005 when omitted. */
@@ -143,13 +67,6 @@ const loadGsplat = (assets: AssetRegistry, assetSource: AssetSource, loadOptions
             if (missing.length > 0) {
                 reject(new Error(`This file does not contain gaussian splatting data. The following properties are missing: ${missing.join(', ')}`));
             } else {
-                try {
-                    uploadVisibilitySH(asset.resource as GSplatResource, splatData);
-                } catch (e) {
-                    reject(e instanceof Error ? e : new Error(String(e)));
-                    return;
-                }
-
                 const resource = asset.resource as GSplatResource;
                 (resource as any).visibilityCullThreshold = loadOptions?.visibilityCullThreshold ?? 0.005;
 
