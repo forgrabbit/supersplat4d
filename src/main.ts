@@ -9,6 +9,7 @@ import { Events } from './events';
 import { initFileHandler } from './file-handler';
 import { registerIframeApi } from './iframe-api';
 import { registerPlySequenceEvents } from './ply-sequence';
+import { registerPublicModelEvents } from './public-models';
 import { registerPublishEvents } from './publish';
 import { registerRenderEvents } from './render';
 import { Scene } from './scene';
@@ -32,6 +33,7 @@ import { ToolManager } from './tools/tool-manager';
 import { registerTransformHandlerEvents } from './transform-handler';
 import { EditorUI } from './ui/editor';
 import { localizeInit } from './ui/localization';
+import { isMobileDevice } from './utils/device-detection';
 
 declare global {
     interface LaunchParams {
@@ -258,6 +260,7 @@ const main = async () => {
     registerCameraPosesEvents(events);
     registerTransformHandlerEvents(events);
     registerPlySequenceEvents(events);
+    registerPublicModelEvents(events);
     registerPublishEvents(events);
     registerDocEvents(scene, events);
     registerRenderEvents(scene, events);
@@ -266,13 +269,17 @@ const main = async () => {
     initShortcuts(events);
     initFileHandler(scene, events, editorUI.appContainer.dom);
 
+    if (isMobileDevice()) {
+        events.fire('camera.sethighPrecision', false);
+    }
+
     // load async models
     scene.start();
 
     // handle load params
     const loadList = url.searchParams.getAll('load');
     const filenameList = url.searchParams.getAll('filename');
-    
+
     if (loadList.length > 0) {
         // Load from URL params
         for (const [i, value] of loadList.entries()) {

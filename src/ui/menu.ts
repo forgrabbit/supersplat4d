@@ -1,6 +1,7 @@
 import { Container, Element, Label } from '@playcanvas/pcui';
 
 import { Events } from '../events';
+import type { PublicModel } from '../public-models';
 import { recentFiles } from '../recent-files';
 import { localize } from './localization';
 import { MenuPanel, MenuItem } from './menu-panel';
@@ -49,6 +50,25 @@ const getOpenRecentItems = async (events: Events) => {
     return items;
 };
 
+const getPublicModelItems = (models: PublicModel[], events: Events): MenuItem[] => {
+    if (models.length === 0) {
+        return [{
+            text: localize('menu.models.none'),
+            isEnabled: () => false
+        }];
+    }
+
+    return models.map((model) => {
+        return {
+            text: model.path,
+            icon: createSvg(sceneOpen),
+            onSelect: async () => {
+                await events.invoke('models.load', model);
+            }
+        };
+    });
+};
+
 class Menu extends Container {
     constructor(events: Events, args = {}) {
         args = {
@@ -86,6 +106,11 @@ class Menu extends Container {
             class: 'menu-option'
         });
 
+        const models = new Label({
+            text: localize('menu.models'),
+            class: 'menu-option'
+        });
+
         const toggleCollapsed = () => {
             document.body.classList.toggle('collapsed');
         };
@@ -111,6 +136,7 @@ class Menu extends Container {
         buttonsContainer.append(scene);
         buttonsContainer.append(selection);
         buttonsContainer.append(render);
+        buttonsContainer.append(models);
         buttonsContainer.append(help);
         buttonsContainer.append(collapse);
         buttonsContainer.append(arrow);
@@ -263,6 +289,11 @@ class Menu extends Container {
             onSelect: async () => await events.invoke('show.videoSettingsDialog')
         }]);
 
+        const modelMenuPanel = new MenuPanel([{
+            text: localize('menu.models.loading'),
+            isEnabled: () => false
+        }]);
+
         const videoTutorialsMenuPanel = new MenuPanel([{
             text: localize('menu.help.video-tutorials.basics'),
             icon: 'E261',
@@ -319,8 +350,22 @@ class Menu extends Container {
         this.append(exportMenuPanel);
         this.append(selectionMenuPanel);
         this.append(renderMenuPanel);
+        this.append(modelMenuPanel);
         this.append(videoTutorialsMenuPanel);
         this.append(helpMenuPanel);
+
+        const refreshModelMenuPanel = async () => {
+            try {
+                const modelList = ((await events.invoke('models.list')) as PublicModel[]) ?? [];
+                modelMenuPanel.setItems(getPublicModelItems(modelList, events));
+            } catch (error) {
+                console.error('Failed to load public model list:', error);
+                modelMenuPanel.setItems([{
+                    text: localize('menu.models.load-failed'),
+                    isEnabled: () => false
+                }]);
+            }
+        };
 
         const options: { dom: HTMLElement, menuPanel: MenuPanel }[] = [{
             dom: scene.dom,
@@ -332,16 +377,30 @@ class Menu extends Container {
             dom: render.dom,
             menuPanel: renderMenuPanel
         }, {
+            dom: models.dom,
+            menuPanel: modelMenuPanel
+        }, {
             dom: help.dom,
             menuPanel: helpMenuPanel
         }];
 
         options.forEach((option) => {
-            const activate = () => {
+            const activate = async () => {
+                if (option.menuPanel === modelMenuPanel) {
+                    modelMenuPanel.setItems([{
+                        text: localize('menu.models.loading'),
+                        isEnabled: () => false
+                    }]);
+                }
+
                 option.menuPanel.position(option.dom, 'bottom', 2);
                 options.forEach((opt) => {
                     opt.menuPanel.hidden = opt !== option;
                 });
+
+                if (option.menuPanel === modelMenuPanel) {
+                    await refreshModelMenuPanel();
+                }
             };
 
             option.dom.addEventListener('pointerdown', (event: PointerEvent) => {

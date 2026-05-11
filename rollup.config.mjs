@@ -13,6 +13,7 @@ import scss from 'rollup-plugin-scss';
 import sass from 'sass';
 
 import copyAndWatch from './copy-and-watch.mjs';
+import publicAssetsAndModelManifest from './public-assets-and-model-manifest.mjs';
 
 // prod is release build
 if (process.env.BUILD_TYPE === 'prod') {
@@ -52,6 +53,7 @@ const application = {
     },
     external: ['jszip'],
     plugins: [
+        publicAssetsAndModelManifest(),
         copyAndWatch({
             targets: [
                 {
@@ -66,8 +68,7 @@ const application = {
                 { src: 'static/icons', dest: 'static' },
                 { src: 'static/lib', dest: 'static' },
                 { src: 'static/locales', dest: 'static' },
-                { src: 'static/env/VertebraeHDRI_v1_512.png', dest: 'static/env' },
-                { src: 'public/ski_demo.sog4d' }  // Copy demo model
+                { src: 'static/env/VertebraeHDRI_v1_512.png', dest: 'static/env' }
             ]
         }),
         alias({
