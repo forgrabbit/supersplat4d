@@ -27,6 +27,9 @@ class GyroscopeController {
     // Smoothing factor (0-1, higher = less smoothing)
     private smoothingFactor: number = 0.3;
 
+    // Gyroscope rotation multiplier
+    private sensitivityFactor: number = 1.5;
+
     // Current smoothed values
     private smoothedGamma: number = 0;
     private smoothedBeta: number = 0;
@@ -191,8 +194,8 @@ class GyroscopeController {
         // - Gamma (left-right tilt): affects camera azimuth (horizontal rotation)
         // - Beta (front-back tilt): affects camera elevation (vertical rotation)
         // Note: When device tilts forward (beta increases), user expects to see model top (elev increases)
-        const newAzim = this.initialCameraAzim - deltaGamma;
-        const newElev = this.initialCameraElev - deltaBeta;
+        const newAzim = this.initialCameraAzim - deltaGamma * this.sensitivityFactor;
+        const newElev = this.initialCameraElev - deltaBeta * this.sensitivityFactor;
 
         // Update camera orientation with minimal damping for responsiveness
         this.camera.setAzimElev(newAzim, newElev, 0.5);
