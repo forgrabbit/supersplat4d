@@ -288,19 +288,25 @@ const main = async () => {
                 decodeURIComponent(filenameList[i]) :
                 decoded.split('/').pop();
 
-            await events.invoke('import', [{
+            const result = await events.invoke('import', [{
                 filename,
                 url: decoded
             }]);
+            if (result && result.length > 0) {
+                events.fire('doc.setName', filename);
+            }
         }
     } else {
         // Auto-load demo data if no URL params
         console.log('🎬 Auto-loading demo dynamic Gaussian Splat...');
         try {
-            await events.invoke('import', [{
+            const result = await events.invoke('import', [{
                 filename: 'ski_demo.sog4d',
                 url: './ski_demo.sog4d'
             }]);
+            if (result && result.length > 0) {
+                events.fire('doc.setName', 'ski_demo.sog4d');
+            }
         } catch (error) {
             console.warn('⚠️ Failed to auto-load demo data:', error);
         }
@@ -311,10 +317,13 @@ const main = async () => {
     if ('launchQueue' in window) {
         window.launchQueue.setConsumer(async (launchParams: LaunchParams) => {
             for (const file of launchParams.files) {
-                await events.invoke('import', [{
+                const result = await events.invoke('import', [{
                     filename: file.name,
                     contents: await file.getFile()
                 }]);
+                if (result && result.length > 0) {
+                    events.fire('doc.setName', file.name);
+                }
             }
         });
     }

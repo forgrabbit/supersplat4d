@@ -25,6 +25,7 @@ import { SceneState } from './scene-state';
 import { Splat } from './splat';
 import { SplatOverlay } from './splat-overlay';
 import { Underlay } from './underlay';
+import { isMobileDevice } from './utils/device-detection';
 
 class Scene {
     events: Events;
@@ -59,6 +60,7 @@ class Scene {
     outline: Outline;
     underlay: Underlay;
     miniStats: MiniStats;
+    miniStatsVisible = true;
 
     contentRoot: Entity;
     cameraRoot: Entity;
@@ -235,6 +237,20 @@ class Scene {
             { name: 'FPS', stats: ['frame.fps'], decimalPlaces: 1, watermark: 60 }
         );
         this.miniStats = new MiniStats(this.app, msOptions as never);
+        const setMiniStatsVisible = (visible: boolean) => {
+            this.miniStatsVisible = visible;
+            this.miniStats.enabled = visible;
+            ((this.miniStats as any).div as HTMLDivElement | undefined)?.style.setProperty('display', visible ? 'block' : 'none');
+            this.events.fire('miniStats.visibility', visible);
+        };
+        this.events.function('miniStats.visible', () => this.miniStatsVisible);
+        this.events.on('miniStats.setVisible', (visible: boolean) => {
+            setMiniStatsVisible(visible);
+        });
+        this.events.on('miniStats.toggleVisible', () => {
+            setMiniStatsVisible(!this.miniStatsVisible);
+        });
+        setMiniStatsVisible(!isMobileDevice());
 
         // MiniStats needs continuous render loop to update
         this.app.autoRender = true;

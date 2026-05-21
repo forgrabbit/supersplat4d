@@ -12,6 +12,7 @@ import { ExportPopup } from './export-popup';
 import { ImageSettingsDialog } from './image-settings-dialog';
 import { localize, localizeInit } from './localization';
 import { Menu } from './menu';
+import { MobileProductOverlay } from './mobile-product-overlay';
 import { MobileToolbar } from './mobile-toolbar';
 import { ModeToggle } from './mode-toggle';
 import logo from './playcanvas-logo.png';
@@ -135,11 +136,13 @@ class EditorUI {
 
         // Mobile toolbar (only for mobile devices)
         let mobileToolbar: MobileToolbar | null = null;
+        let mobileProductOverlay: MobileProductOverlay | null = null;
         if (isMobile) {
             // On mobile, scene panel starts hidden and will show when toolbar expands
             scenePanel.hidden = true;
             // Don't add mobile-scene-panel class here, let the toolbar handle it
             mobileToolbar = new MobileToolbar(events, tooltips, scenePanel);
+            mobileProductOverlay = new MobileProductOverlay(events);
         }
 
         canvasContainer.dom.appendChild(canvas);
@@ -154,6 +157,9 @@ class EditorUI {
             if (mobileToolbar) {
                 canvasContainer.append(mobileToolbar);
             }
+            if (mobileProductOverlay) {
+                canvasContainer.append(mobileProductOverlay);
+            }
             // Hide desktop components
             viewPanel.hidden = true;
             colorPanel.hidden = true;
@@ -161,6 +167,8 @@ class EditorUI {
             rightToolbar.hidden = true;
             modeToggle.hidden = true;
             menu.hidden = true;
+            appLabel.hidden = true;
+            cursorLabel.hidden = true;
         } else {
             // Desktop: show all components
             canvasContainer.append(viewPanel);

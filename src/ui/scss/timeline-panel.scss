@@ -103,6 +103,25 @@
                     flex-grow: 1 !important;
                     flex-basis: 0 !important;
                     justify-content: flex-start !important;
+
+                    > .mini-stats-button {
+                        width: 44px !important;
+                        height: 32px !important;
+                        margin: 0 !important;
+                        padding: 0 !important;
+                        border-radius: 8px !important;
+                        font-family: inherit !important;
+                        font-size: 11px !important;
+                        font-weight: 700 !important;
+                        line-height: 32px !important;
+                        letter-spacing: 0.02em;
+
+                        &.active {
+                            color: $clr-active !important;
+                            background-color: $clr-hilight !important;
+                            border-color: #937EE288 !important;
+                        }
+                    }
                 }
                 
                 &:last-of-type {

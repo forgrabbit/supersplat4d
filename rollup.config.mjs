@@ -21,10 +21,25 @@ if (process.env.BUILD_TYPE === 'prod') {
 }
 // debug, profiler, release - default profiler for MiniStats sort/render time
 const BUILD_TYPE = process.env.BUILD_TYPE || 'profiler';
+const BUILD_ID = new Date().toISOString();
 const engineSuffix = BUILD_TYPE === 'debug' ? '.dbg' : BUILD_TYPE === 'profiler' ? '.prf' : '';
 const ENGINE_DIR = path.resolve(`node_modules/playcanvas/build/playcanvas${engineSuffix}/src/index.js`);
 const PCUI_DIR = path.resolve('node_modules/@playcanvas/pcui');
 const HREF = process.env.BASE_HREF || '';
+
+const buildIdReplace = () => ({
+    name: 'build-id-replace',
+    transform(code, id) {
+        if (id.endsWith(`${path.sep}src${path.sep}sw.ts`)) {
+            return {
+                code: code.replace('__BUILD_ID__', BUILD_ID),
+                map: null
+            };
+        }
+
+        return null;
+    }
+});
 
 const outputHeader = () => {
     const BLUE_OUT = '\x1b[34m';
@@ -53,6 +68,7 @@ const application = {
     },
     external: ['jszip'],
     plugins: [
+        buildIdReplace(),
         publicAssetsAndModelManifest(),
         copyAndWatch({
             targets: [
@@ -114,6 +130,7 @@ const serviceWorker = {
         sourcemap: true
     },
     plugins: [
+        buildIdReplace(),
         resolve(),
         json(),
         typescript()

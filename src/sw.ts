@@ -3,7 +3,8 @@ import { version as appVersion } from '../package.json';
 // export default null
 declare let self: ServiceWorkerGlobalScope;
 
-const cacheName = `superSplat-v${appVersion}`;
+const buildId = '__BUILD_ID__';
+const cacheName = `superSplat-v${appVersion}-${buildId}`;
 
 const cacheUrls = [
     './',
@@ -34,22 +35,25 @@ self.addEventListener('install', (event) => {
     event.waitUntil(
         caches.open(cacheName)
         .then((cache) => {
-            cache.addAll(cacheUrls);
+            return cache.addAll(cacheUrls);
         })
     );
+    self.skipWaiting();
 });
 
-self.addEventListener('activate', () => {
+self.addEventListener('activate', (event) => {
     console.log(`activating v${appVersion}`);
 
     // delete the old caches once this one is activated
-    caches.keys().then((names) => {
+    event.waitUntil((async () => {
+        const names = await caches.keys();
         for (const name of names) {
             if (name !== cacheName) {
-                caches.delete(name);
+                await caches.delete(name);
             }
         }
-    });
+        await self.clients.claim();
+    })());
 });
 
 self.addEventListener('fetch', (event) => {

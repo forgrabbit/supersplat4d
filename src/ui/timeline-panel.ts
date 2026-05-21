@@ -219,6 +219,7 @@ class TimelinePanel extends Container {
         let next: Button | null = null;
         let addKey: Button | null = null;
         let removeKey: Button | null = null;
+        let miniStatsToggle: Button | null = null;
 
         if (!isMobile) {
             prev = new Button({
@@ -240,6 +241,11 @@ class TimelinePanel extends Container {
                 class: 'button',
                 text: '\uE121',
                 enabled: false
+            });
+        } else {
+            miniStatsToggle = new Button({
+                class: ['button', 'mini-stats-button'],
+                text: 'FPS'
             });
         }
 
@@ -343,6 +349,9 @@ class TimelinePanel extends Container {
         const spacerR = new Container({
             class: 'spacer'
         });
+        if (isMobile && miniStatsToggle) {
+            spacerL.append(miniStatsToggle);
+        }
         spacerR.append(settingsControls);
         
         controlsWrap.append(spacerL);
@@ -441,6 +450,19 @@ class TimelinePanel extends Container {
         // tooltips
         tooltips.register(play, localize('tooltip.timeline.play'), 'top');
         tooltips.register(speed, localize('tooltip.timeline.frame-rate'), 'top');
+
+        if (isMobile && miniStatsToggle) {
+            miniStatsToggle.on('click', () => {
+                events.fire('miniStats.toggleVisible');
+            });
+
+            const updateMiniStatsButton = (visible: boolean) => {
+                miniStatsToggle!.class[visible ? 'add' : 'remove']('active');
+            };
+
+            events.on('miniStats.visibility', updateMiniStatsButton);
+            tooltips.register(miniStatsToggle, 'Toggle performance panel', 'top');
+        }
         
         if (!isMobile && prev && next && addKey && removeKey && frames && smoothness) {
             tooltips.register(prev, localize('tooltip.timeline.prev-key'), 'top');

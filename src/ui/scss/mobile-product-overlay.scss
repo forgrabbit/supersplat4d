@@ -1,0 +1,196 @@
+@use 'colors.scss' as *;
+
+#mobile-product-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1001;
+
+    .mobile-product-thumb-wrap {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        width: 108px;
+        height: 108px;
+        pointer-events: auto;
+        transition: width 0.18s ease, height 0.18s ease;
+    }
+
+    .mobile-product-toggle {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        z-index: 2;
+        width: 34px;
+        min-width: 34px;
+        height: 34px;
+        padding: 0;
+        border: 0;
+        border-radius: 999px;
+        background: rgba(17, 17, 17, 0.78);
+        color: #fff;
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        svg {
+            width: 18px;
+            height: 18px;
+            display: block;
+            color: #fff;
+            fill: #fff;
+            stroke: #fff;
+        }
+
+        &:hover,
+        &:active {
+            border: 0;
+            background: rgba(17, 17, 17, 0.86);
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
+            color: #fff;
+        }
+    }
+
+    .mobile-product-thumb {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.94);
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
+        transition: opacity 0.18s ease, transform 0.18s ease;
+
+        img {
+            width: 100%;
+            height: 100%;
+            display: block;
+            object-fit: cover;
+            object-position: center top;
+        }
+    }
+
+    .mobile-product-price {
+        position: absolute;
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 14px 16px 16px;
+        border-radius: 24px;
+        background: linear-gradient(135deg, rgba(8, 154, 78, 0.96), rgba(38, 184, 111, 0.96));
+        color: #fff;
+        box-shadow: 0 14px 34px rgba(0, 0, 0, 0.24);
+        pointer-events: auto;
+    }
+
+    .mobile-product-hero {
+        display: flex;
+        align-items: stretch;
+        gap: 10px;
+    }
+
+    .mobile-product-main {
+        min-width: 0;
+        flex: 1 1 auto;
+    }
+
+    .mobile-product-price-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 18px;
+        margin-bottom: 5px;
+    }
+
+    .mobile-product-label {
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.18);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+    }
+
+    .mobile-product-value {
+        display: block;
+        font-size: 30px;
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: -0.02em;
+    }
+
+    .mobile-product-original {
+        color: rgba(255, 255, 255, 0.78);
+        font-size: 12px;
+        text-decoration: line-through;
+    }
+
+    .mobile-product-benefit {
+        width: 104px;
+        flex: 0 0 104px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 4px;
+        padding: 10px 10px 9px;
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.16);
+        text-align: left;
+    }
+
+    .mobile-product-benefit-title {
+        font-size: 13px;
+        font-weight: 700;
+        line-height: 1.15;
+    }
+
+    .mobile-product-benefit-text {
+        font-size: 11px;
+        line-height: 1.25;
+        color: rgba(255, 255, 255, 0.86);
+    }
+
+    .mobile-product-details {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .mobile-product-detail-pill {
+        min-width: 0;
+        max-width: 100%;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.16);
+        font-size: 11px;
+        line-height: 1.2;
+        color: rgba(255, 255, 255, 0.96);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .mobile-product-detail-pill-accent {
+        background: rgba(255, 255, 255, 0.24);
+    }
+
+    &.is-collapsed {
+        .mobile-product-thumb-wrap {
+            width: 34px;
+            height: 34px;
+        }
+
+        .mobile-product-toggle {
+            top: 0;
+            right: 0;
+        }
+
+        .mobile-product-thumb {
+            opacity: 0;
+            transform: scale(0.88);
+        }
+    }
+}
