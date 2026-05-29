@@ -24,6 +24,7 @@ import {
 
 import { Element, ElementType } from './element';
 import type { DynManifest } from './loaders/dyn';
+import { profiler } from './profiling';
 import { Serializer } from './serializer';
 import { vertexShader, fragmentShader, gsplatCenter } from './shaders/splat-shader';
 import { State } from './splat-state';
@@ -107,22 +108,24 @@ class Splat extends Element {
     dynManifest: DynManifest | null = null;
     dynBaseUrl = '';
     sog4dSegments: Map<string, ArrayBuffer> | null = null;  // Preloaded segments from SOG4D
-    
+
     // Segment management
     segmentCache = new Map<number, Uint32Array>();
     loadingSegments = new Set<number>();
     currentSegmentIndex = -1;
     activeIndices: Uint32Array | null = null;  // Current segment's active splats
-    
+    lastDrawSplats = 0;
+    lastActiveSplats = 0;
+
     // Frame tracking
     lastSortedFrame = -1;
     lastSortedTime = NaN;
     displayFrame = -1;  // Currently displayed frame (stable playback)
     pendingSort = false;  // Whether a sort is pending
-    
+
     // For initial setup
     currentTime = 0;  // Used during initialization
-    
+
     // Cached dynamic data arrays (for fast center updates)
     _dyn_x0: Float32Array | null = null;
     _dyn_y0: Float32Array | null = null;
@@ -161,6 +164,8 @@ class Splat extends Element {
                 this.sog4dSegments = (resource as any).sog4dSegments as Map<string, ArrayBuffer>;
             }
         }
+        this.lastActiveSplats = this.isDynamic ? 0 : this.numSplats;
+        this.lastDrawSplats = this.isDynamic ? 0 : this.numSplats;
 
         this.entity = new Entity('splatEntitiy');
         this.entity.setEulerAngles(orientation);
@@ -409,7 +414,7 @@ class Splat extends Element {
             }
             material.setParameter('splatState', this.stateTexture);
             material.setParameter('splatTransform', this.transformTexture);
-            
+
             // Set dynamic gaussian parameters
             if (this.isDynamic) {
                 material.setDefine('DYNAMIC_MODE', true);
@@ -429,7 +434,7 @@ class Splat extends Element {
                 material.setDefine('DYNAMIC_MODE', false);
                 material.setParameter('uIsDynamic', 0.0);
             }
-            
+
             material.update();
         };
 
@@ -442,22 +447,33 @@ class Splat extends Element {
         instance.meshInstance._updateAabb = false;
 
         // when sort changes, re-render the scene and mark sort complete
-        instance.sorter.on('updated', () => {
+        instance.sorter.on('updated', (count?: number, sortDetails?: Record<string, unknown>) => {
+            if (typeof count === 'number') {
+                this.lastDrawSplats = count;
+                profiler.addFrameValue('drawSplatsUpdated', count);
+            }
+            profiler.event('splat.sort.updated', {
+                splat: this.name,
+                drawSplats: typeof count === 'number' ? count : undefined,
+                activeSplats: this.lastActiveSplats,
+                segmentIndex: this.currentSegmentIndex,
+                ...(sortDetails ?? {})
+            });
             this.changedCounter++;
             if (this.pendingSort) {
                 this.pendingSort = false;
-                
+
                 // Now that sorting is complete, update the shader time
                 // This ensures rendering uses the same time as sorting
                 if (this.isDynamic && !Number.isNaN(this.lastSortedTime)) {
                     instance.material.setParameter('uCurrentTime', this.lastSortedTime);
                 }
-                
+
                 this.scene.forceRender = true;
                 this.scene.app.renderNextFrame = true;
             }
         });
-        
+
         // Cache dynamic data arrays for fast center updates
         if (this.isDynamic) {
             this._dyn_x0 = this.splatData.getProp('x') as Float32Array;
@@ -468,7 +484,7 @@ class Splat extends Element {
             this._dyn_m2 = this.splatData.getProp('motion_2') as Float32Array;
             this._dyn_tc = this.splatData.getProp('trbf_center') as Float32Array;
         }
-        
+
         const initTime = performance.now() - initStartTime;
         console.log(`⏱️  Splat constructor initialization: ${initTime.toFixed(2)}ms`);
     }
@@ -504,11 +520,11 @@ class Splat extends Element {
      * Reference: supersplat_base's _updateCentersActive
      */
     private updateCentersForTime(centers: Float32Array, indices: Uint32Array, t_abs: number): void {
-        if (!this._dyn_x0 || !this._dyn_y0 || !this._dyn_z0 || 
+        if (!this._dyn_x0 || !this._dyn_y0 || !this._dyn_z0 ||
             !this._dyn_m0 || !this._dyn_m1 || !this._dyn_m2 || !this._dyn_tc) {
             return;
         }
-        
+
         const x0 = this._dyn_x0;
         const y0 = this._dyn_y0;
         const z0 = this._dyn_z0;
@@ -516,7 +532,7 @@ class Splat extends Element {
         const m1 = this._dyn_m1;
         const m2 = this._dyn_m2;
         const tc = this._dyn_tc;
-        
+
         // Manually unroll the hot loop for better performance (4x unroll)
         const n = indices.length;
         let i = 0;
@@ -567,6 +583,7 @@ class Splat extends Element {
             return;
         }
 
+        const totalStart = profiler.now();
         const motion0 = this.splatData.getProp('motion_0') as Float32Array;
         const motion1 = this.splatData.getProp('motion_1') as Float32Array;
         const motion2 = this.splatData.getProp('motion_2') as Float32Array;
@@ -581,6 +598,7 @@ class Splat extends Element {
         const { width, height } = this.motionTexture;
         const textureSize = width * height;
 
+        const packStart = profiler.now();
         // Pack motion data: RGBA = motion_0, motion_1, motion_2, unused
         const motionData = new Float32Array(textureSize * 4);
         // Pack trbf data: RGBA = trbf_center, trbf_scale, unused, unused
@@ -598,31 +616,71 @@ class Splat extends Element {
             trbfData[idx + 2] = 0;
             trbfData[idx + 3] = 0;
         }
+        const packMs = profiler.now() - packStart;
 
         // Upload to textures
+        let motionUploadMs = 0;
+        let trbfUploadMs = 0;
         const motionLock = this.motionTexture.lock() as Float32Array;
         if (motionLock) {
             motionLock.set(motionData);
+            const motionUploadStart = profiler.now();
             this.motionTexture.unlock();
+            motionUploadMs = profiler.now() - motionUploadStart;
         }
 
         const trbfLock = this.trbfTexture.lock() as Float32Array;
         if (trbfLock) {
             trbfLock.set(trbfData);
+            const trbfUploadStart = profiler.now();
             this.trbfTexture.unlock();
+            trbfUploadMs = profiler.now() - trbfUploadStart;
         }
+
+        const motionTexBytes = (this.motionTexture as Texture & { gpuSize?: number }).gpuSize ?? 0;
+        const trbfTexBytes = (this.trbfTexture as Texture & { gpuSize?: number }).gpuSize ?? 0;
+        profiler.setFrameValues({
+            motionTexBytes,
+            trbfTexBytes,
+            dynamicTexBytes: motionTexBytes + trbfTexBytes
+        });
+        profiler.event('dynamicTexture.upload', {
+            splat: this.name,
+            numSplats,
+            width,
+            height,
+            texturePixels: textureSize,
+            packMs,
+            motionUploadMs,
+            trbfUploadMs,
+            totalMs: profiler.now() - totalStart,
+            motionTexBytes,
+            trbfTexBytes
+        });
     }
 
     // Load a segment's active indices
     private async loadSegment(segmentIndex: number): Promise<Uint32Array | null> {
+        const loadStart = profiler.now();
         if (!this.isDynamic || !this.dynManifest) {
             return null;
         }
 
         if (this.segmentCache.has(segmentIndex)) {
             // Create a fresh copy from cached ArrayBuffer to avoid detachment issues
+            const copyStart = profiler.now();
             const cached = this.segmentCache.get(segmentIndex)!;
-            return new Uint32Array(cached);
+            const result = new Uint32Array(cached);
+            profiler.event('segment.load', {
+                splat: this.name,
+                segmentIndex,
+                source: 'cache',
+                activeSplats: result.length,
+                bytes: result.byteLength,
+                copyMs: profiler.now() - copyStart,
+                totalMs: profiler.now() - loadStart
+            });
+            return result;
         }
 
         if (this.loadingSegments.has(segmentIndex)) {
@@ -631,10 +689,28 @@ class Splat extends Element {
                 const checkInterval = setInterval(() => {
                     if (this.segmentCache.has(segmentIndex)) {
                         clearInterval(checkInterval);
+                        const copyStart = profiler.now();
                         const cached = this.segmentCache.get(segmentIndex)!;
-                        resolve(new Uint32Array(cached));
+                        const result = new Uint32Array(cached);
+                        profiler.event('segment.load', {
+                            splat: this.name,
+                            segmentIndex,
+                            source: 'pending-wait',
+                            activeSplats: result.length,
+                            bytes: result.byteLength,
+                            copyMs: profiler.now() - copyStart,
+                            totalMs: profiler.now() - loadStart
+                        });
+                        resolve(result);
                     } else if (!this.loadingSegments.has(segmentIndex)) {
                         clearInterval(checkInterval);
+                        profiler.event('segment.load', {
+                            splat: this.name,
+                            segmentIndex,
+                            source: 'pending-wait',
+                            failed: true,
+                            totalMs: profiler.now() - loadStart
+                        });
                         resolve(null);
                     }
                 }, 50);
@@ -642,6 +718,13 @@ class Splat extends Element {
         }
 
         if (segmentIndex < 0 || segmentIndex >= this.dynManifest.segments.length) {
+            profiler.event('segment.load', {
+                splat: this.name,
+                segmentIndex,
+                source: 'invalid',
+                failed: true,
+                totalMs: profiler.now() - loadStart
+            });
             return null;
         }
 
@@ -657,16 +740,24 @@ class Splat extends Element {
                 arrayBuffer = this.sog4dSegments.get(segment.url)!;
             } else {
                 // Fetch from network (for .dyn.json format)
+                const fetchStart = profiler.now();
                 const segmentUrl = this.dynBaseUrl + segment.url;
                 const response = await fetch(segmentUrl);
                 if (!response.ok) {
                     throw new Error(`Failed to load segment ${segmentIndex}: ${response.statusText}`);
                 }
                 arrayBuffer = await response.arrayBuffer();
+                profiler.event('segment.fetch', {
+                    splat: this.name,
+                    segmentIndex,
+                    url: segment.url,
+                    bytes: arrayBuffer.byteLength,
+                    ms: profiler.now() - fetchStart
+                });
             }
 
             const indices = new Uint32Array(arrayBuffer);
-            
+
             // Validate indices are within range
             const maxIndex = this.splatData.numSplats - 1;
             let invalidCount = 0;
@@ -681,9 +772,26 @@ class Splat extends Element {
             this.segmentCache.set(segmentIndex, cachedCopy);
             this.loadingSegments.delete(segmentIndex);
             // Return another copy for immediate use
-            return new Uint32Array(indices);
+            const result = new Uint32Array(indices);
+            profiler.event('segment.load', {
+                splat: this.name,
+                segmentIndex,
+                source: this.sog4dSegments && this.sog4dSegments.has(segment.url) ? 'preloaded' : 'network',
+                activeSplats: result.length,
+                bytes: result.byteLength,
+                totalMs: profiler.now() - loadStart
+            });
+            return result;
         } catch (error) {
             this.loadingSegments.delete(segmentIndex);
+            profiler.event('segment.load', {
+                splat: this.name,
+                segmentIndex,
+                source: 'error',
+                failed: true,
+                message: error instanceof Error ? error.message : String(error),
+                totalMs: profiler.now() - loadStart
+            });
             return null;
         }
     }
@@ -896,43 +1004,63 @@ class Splat extends Element {
                     this.scene.events.function('scene.hasDynamicGaussian', () => true);
                 }
             }, 0);
-            
+
             // Initialize time and load first segment
             const initialRelativeTime = 0;
             const initialFrame = 0;
             const initialFrameTime = this.dynManifest.start + initialFrame / this.dynManifest.fps;
             this.currentTime = initialFrameTime;
-            
+
             // Find initial segment and load it
             const initialSegmentIndex = this.findSegment(initialFrameTime);
             this.currentSegmentIndex = initialSegmentIndex;
-            
+
             // Load initial segment and update mapping
             // Use an empty mapping initially to hide all splats until segment loads
+            const emptyMappingStart = profiler.now();
             this.entity.gsplat.instance.sorter.setMapping(new Uint32Array(0));
-            
+            profiler.addFrameValue('setMappingCallMs', profiler.now() - emptyMappingStart);
+
             this.loadSegment(initialSegmentIndex).then((indices) => {
                 // Only apply if this is still the current segment
                 if (this.currentSegmentIndex !== initialSegmentIndex) {
                     return;
                 }
-                
+
                 if (indices && indices.length > 0) {
                     // Cache active indices
-                    this.activeIndices = indices;
-                    
+                    this.activeIndices = this.segmentCache.get(initialSegmentIndex) ?? indices;
+                    this.lastActiveSplats = indices.length;
+                    profiler.setFrameValues({
+                        activeSplats: indices.length,
+                        segmentIndex: initialSegmentIndex
+                    });
+
                     // Update centers for initial frame
                     const sorter = this.entity.gsplat.instance.sorter;
+                    const updateCentersStart = profiler.now();
                     this.updateCentersForTime(sorter.centers, indices, this.dynManifest!.start);
-                    
+                    const updateCentersMs = profiler.now() - updateCentersStart;
+                    profiler.addFrameValue('updateCentersMs', updateCentersMs);
+                    profiler.event('splat.updateCenters', {
+                        splat: this.name,
+                        segmentIndex: initialSegmentIndex,
+                        activeSplats: indices.length,
+                        time: this.dynManifest!.start,
+                        ms: updateCentersMs,
+                        initial: true
+                    });
+
                     // Mark as pending sort so that uCurrentTime is set when sorting completes
                     this.pendingSort = true;
                     this.lastSortedFrame = 0;
                     this.lastSortedTime = this.dynManifest!.start;
-                    
+
                     // Set mapping to trigger sort
+                    const setMappingStart = profiler.now();
                     sorter.setMapping(indices);
-                    
+                    profiler.addFrameValue('setMappingCallMs', profiler.now() - setMappingStart);
+
                     this.preloadNextSegment(initialSegmentIndex);
                 }
             });
@@ -1156,7 +1284,7 @@ class Splat extends Element {
 
     /**
      * onUpdate: 动态高斯核心更新流程（每帧调用，即使不渲染）
-     * 
+     *
      * 核心诉求：
      * 1. 每一帧更新位置 (centers)
      * 2. 排序
@@ -1166,46 +1294,82 @@ class Splat extends Element {
         if (!this.isDynamic || !this.dynManifest) {
             return;
         }
-        
+
         const events = this.scene.events;
-        
+
         // 1. 获取当前帧 (从 timeline)
         const currentFrame = (events.invoke('timeline.frame') ?? 0) as number;
         const totalFrames = Math.ceil(this.dynManifest.duration * this.dynManifest.fps);
         const frame = currentFrame % totalFrames;
-        
+
         // 2. 计算该帧的绝对时间
         const t_abs = this.dynManifest.start + (frame / this.dynManifest.fps);
-        
+
         // 3. 检查是否需要更新（帧变了 && 没有正在排序）
         const needsUpdate = frame !== this.lastSortedFrame && !this.pendingSort;
-        
+        if (frame !== this.lastSortedFrame && this.pendingSort) {
+            profiler.addFrameValue('sortPendingFrames', 1);
+            profiler.event('splat.sort.skipped', {
+                splat: this.name,
+                frame,
+                lastSortedFrame: this.lastSortedFrame,
+                reason: 'pending-sort'
+            });
+        }
+
         if (needsUpdate) {
             // 4. 找到对应的 segment
             const segmentIdx = this.findSegment(t_abs);
-            
+
             // 5. 检查 segment 是否在缓存中
             if (this.segmentCache.has(segmentIdx)) {
-                const indices = new Uint32Array(this.segmentCache.get(segmentIdx)!);
-                this.activeIndices = indices;
+                const cachedIndices = this.segmentCache.get(segmentIdx)!;
+                const indices = new Uint32Array(cachedIndices);
+                const activeSplats = cachedIndices.length;
+                this.activeIndices = cachedIndices;
+                this.lastActiveSplats = activeSplats;
                 this.currentSegmentIndex = segmentIdx;
-                
+                profiler.addFrameValue('activeSplatsUpdated', activeSplats);
+                profiler.setFrameValues({
+                    segmentIndex: segmentIdx,
+                    currentTime: t_abs
+                });
+
                 // 6. 更新 centers: p(t) = p0 + motion * (t - trbf_center)
                 const sorter = this.entity.gsplat.instance.sorter;
+                const updateCentersStart = profiler.now();
                 this.updateCentersForTime(sorter.centers, indices, t_abs);
-                
+                const updateCentersMs = profiler.now() - updateCentersStart;
+                profiler.addFrameValue('updateCentersMs', updateCentersMs);
+                profiler.event('splat.updateCenters', {
+                    splat: this.name,
+                    segmentIndex: segmentIdx,
+                    activeSplats,
+                    frame,
+                    time: t_abs,
+                    ms: updateCentersMs
+                });
+
                 // 7. 触发排序 (shader uniform uCurrentTime will be set when sorting completes)
                 this.pendingSort = true;
                 this.lastSortedFrame = frame;
                 this.lastSortedTime = t_abs;
-                
+
+                const setMappingStart = profiler.now();
                 sorter.setMapping(indices);
-                
+                profiler.addFrameValue('setMappingCallMs', profiler.now() - setMappingStart);
+
                 // 预加载下一个 segment
                 this.preloadNextSegment(segmentIdx);
-                
+
             } else if (!this.loadingSegments.has(segmentIdx)) {
                 // segment 不在缓存，异步加载
+                profiler.event('segment.cacheMiss', {
+                    splat: this.name,
+                    segmentIndex: segmentIdx,
+                    frame,
+                    time: t_abs
+                });
                 this.loadSegment(segmentIdx).then(() => {
                     this.scene.forceRender = true;
                     this.scene.app.renderNextFrame = true;

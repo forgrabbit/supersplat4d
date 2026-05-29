@@ -16,11 +16,20 @@ import { Asset, AssetRegistry, GSplatData, GSplatResource, Vec3 } from 'playcanv
 // JSZip is loaded globally via script tag in index.html
 declare const JSZip: any;
 
+import { getNextAssetId } from './asset-id-counter';
 import { AssetSource, createReadSource } from './asset-source';
 import type { DynManifest } from './dyn';
-import { getNextAssetId } from './asset-id-counter';
+import { profiler } from '../profiling';
 
 const defaultOrientation = new Vec3(0, 0, 180);
+
+const profileStage = (stage: string, ms: number, data: Record<string, string | number | boolean | undefined> = {}) => {
+    profiler.event('sog4d.stage', {
+        stage,
+        ms,
+        ...data
+    });
+};
 
 // =============================================================================
 // Types
@@ -84,7 +93,7 @@ interface Sog4dMeta {
         url: string;
         count: number;
     }>;
-    
+
     // Optional cubemap background
     cubemap?: {
         file: string;
@@ -100,21 +109,39 @@ interface Sog4dMeta {
  * Decode WebP image to RGBA Uint8Array
  * Uses options to prevent color space conversion and premultiplied alpha
  */
-const decodeWebP = async (data: ArrayBuffer): Promise<{ rgba: Uint8Array, width: number, height: number }> => {
+const decodeWebP = async (data: ArrayBuffer, file = 'unknown.webp'): Promise<{ rgba: Uint8Array, width: number, height: number }> => {
+    const totalStart = profiler.now();
     const blob = new Blob([data], { type: 'image/webp' });
 
     // Disable color space conversion and premultiplied alpha to preserve raw data
+    const bitmapStart = profiler.now();
     const bitmap = await createImageBitmap(blob, {
         premultiplyAlpha: 'none',
         colorSpaceConversion: 'none'
     });
+    const createImageBitmapMs = profiler.now() - bitmapStart;
 
+    const drawStart = profiler.now();
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
     // Use willReadFrequently for better performance when reading pixel data
     const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
     ctx.drawImage(bitmap, 0, 0);
+    const drawImageMs = profiler.now() - drawStart;
 
+    const readStart = profiler.now();
     const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+    const getImageDataMs = profiler.now() - readStart;
+    profiler.event('webp.decode', {
+        file,
+        bytes: data.byteLength,
+        width: bitmap.width,
+        height: bitmap.height,
+        createImageBitmapMs,
+        drawImageMs,
+        getImageDataMs,
+        totalMs: profiler.now() - totalStart
+    });
+
     return {
         rgba: new Uint8Array(imageData.data.buffer),
         width: bitmap.width,
@@ -194,18 +221,29 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatDa
     const zipStartTime = performance.now();
     const zip = await JSZip.loadAsync(zipData);
     const zipTime = performance.now() - zipStartTime;
+    profileStage('zip', zipTime, {
+        bytes: zipData.byteLength
+    });
     console.log(`⏱️  ZIP decompression: ${zipTime.toFixed(2)}ms`);
 
     // Helper to load file from ZIP
     const loadFile = async (name: string): Promise<ArrayBuffer> => {
+        const fileStart = profiler.now();
         const file = zip.file(name);
         if (!file) {
+            profiler.event('sog4d.file.missing', { file: name });
             throw new Error(`Missing file in SOG4D: ${name}`);
         }
         const data = await file.async('arraybuffer');
+        const ms = profiler.now() - fileStart;
         // Log file size for debugging
         const sizeKB = (data.byteLength / 1024).toFixed(2);
         console.log(`  📦 ${name}: ${sizeKB} KB`);
+        profiler.event('sog4d.file', {
+            file: name,
+            bytes: data.byteLength,
+            ms
+        });
         return data;
     };
 
@@ -214,11 +252,20 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatDa
     const metaJson = await loadFile('meta.json');
     const mainMeta: any = JSON.parse(new TextDecoder().decode(metaJson));
     const metaTime = performance.now() - metaStartTime;
+    profileStage('meta', metaTime, {
+        bytes: metaJson.byteLength,
+        type: mainMeta.type
+    });
     console.log(`⏱️  Meta.json parsing: ${metaTime.toFixed(2)}ms`);
 
     // Check if this is a multi-splat format
     if (mainMeta.type === 'sog4d_multi') {
         // This is a multi-splat file, return indicator for special handling
+        profiler.event('sog4d.parse', {
+            type: 'multi',
+            bytes: zipData.byteLength,
+            ms: profiler.now() - parseStartTime
+        });
         return { isMulti: true, mainMeta, zip };
     }
 
@@ -240,33 +287,37 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatDa
     const totalWebpFiles = trbfIsKmeans ? 8 : 9; // 7 common + 1 or 2 TRBF files
     console.log(`  Loading and decoding ${totalWebpFiles} WebP files (all parallel)...`);
     const webpStartTime = performance.now();
-    
+    const loadWebP = (name: string) => loadFile(name).then(data => decodeWebP(data, name));
+
     // Build the parallel decode array
     const webpPromises: Promise<{ rgba: Uint8Array, width: number, height: number }>[] = [
-        loadFile('means_l.webp').then(decodeWebP),
-        loadFile('means_u.webp').then(decodeWebP),
-        loadFile('quats.webp').then(decodeWebP),
-        loadFile('scales.webp').then(decodeWebP),
-        loadFile('sh0.webp').then(decodeWebP),
-        loadFile('motion_l.webp').then(decodeWebP),
-        loadFile('motion_u.webp').then(decodeWebP)
+        loadWebP('means_l.webp'),
+        loadWebP('means_u.webp'),
+        loadWebP('quats.webp'),
+        loadWebP('scales.webp'),
+        loadWebP('sh0.webp'),
+        loadWebP('motion_l.webp'),
+        loadWebP('motion_u.webp')
     ];
-    
+
     // Add TRBF files based on encoding mode
     if (trbfIsKmeans) {
-        webpPromises.push(loadFile('trbf.webp').then(decodeWebP));
+        webpPromises.push(loadWebP('trbf.webp'));
     } else {
         webpPromises.push(
-            loadFile('trbf_l.webp').then(decodeWebP),
-            loadFile('trbf_u.webp').then(decodeWebP)
+            loadWebP('trbf_l.webp'),
+            loadWebP('trbf_u.webp')
         );
     }
-    
+
     // Execute all WebP decodes in parallel
     const webpResults = await Promise.all(webpPromises);
     const webpTime = performance.now() - webpStartTime;
+    profileStage('webp-all', webpTime, {
+        files: totalWebpFiles
+    });
     console.log(`⏱️  WebP decoding (${totalWebpFiles} files, all parallel): ${webpTime.toFixed(2)}ms`);
-    
+
     // Extract results
     const [
         meansL, meansU,
@@ -275,12 +326,12 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatDa
         sh0Data,
         motionL, motionU
     ] = webpResults.slice(0, 7);
-    
+
     // Extract TRBF results
     let trbfData: { rgba: Uint8Array, width: number, height: number } | null = null;
     let trbfL: { rgba: Uint8Array, width: number, height: number } | null = null;
     let trbfU: { rgba: Uint8Array, width: number, height: number } | null = null;
-    
+
     if (trbfIsKmeans) {
         trbfData = webpResults[7];
     } else {
@@ -327,6 +378,7 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatDa
         z[i] = invLogTransform(zLog);
     }
     const meansDecodeTime = performance.now() - meansDecodeStartTime;
+    profileStage('decode.means', meansDecodeTime, { splats: count });
     console.log(`⏱️  Means decoding: ${meansDecodeTime.toFixed(2)}ms`);
 
     // Decode quaternions
@@ -352,6 +404,7 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatDa
         rot_3[i] = qw;
     }
     const quatsDecodeTime = performance.now() - quatsDecodeStartTime;
+    profileStage('decode.quats', quatsDecodeTime, { splats: count });
     console.log(`⏱️  Quaternions decoding: ${quatsDecodeTime.toFixed(2)}ms`);
 
     // Decode scales (codebook lookup)
@@ -367,6 +420,7 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatDa
         scale_2[i] = scalesCodebook[scalesRgba[o + 2]];
     }
     const scalesDecodeTime = performance.now() - scalesDecodeStartTime;
+    profileStage('decode.scales', scalesDecodeTime, { splats: count });
     console.log(`⏱️  Scales decoding: ${scalesDecodeTime.toFixed(2)}ms`);
 
     // Decode colors and opacity (codebook lookup)
@@ -384,6 +438,7 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatDa
         opacity[i] = sigmoidInv(sh0Rgba[o + 3] / 255);
     }
     const colorsDecodeTime = performance.now() - colorsDecodeStartTime;
+    profileStage('decode.colors', colorsDecodeTime, { splats: count });
     console.log(`⏱️  Colors/opacity decoding: ${colorsDecodeTime.toFixed(2)}ms`);
 
     // Decode motion vectors
@@ -404,12 +459,13 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatDa
         motion_2[i] = invLogTransform(m2Log);
     }
     const motionDecodeTime = performance.now() - motionDecodeStartTime;
+    profileStage('decode.motion', motionDecodeTime, { splats: count });
     console.log(`⏱️  Motion vectors decoding: ${motionDecodeTime.toFixed(2)}ms`);
 
     // Decode TRBF parameters
     const trbfDecodeStartTime = performance.now();
     console.log('  Decoding TRBF parameters...');
-    
+
     if (trbfIsKmeans && trbfData) {
         // K-means encoded: lookup from codebooks
         const trbfRgba = trbfData.rgba;
@@ -437,6 +493,10 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatDa
         }
     }
     const trbfDecodeTime = performance.now() - trbfDecodeStartTime;
+    profileStage('decode.trbf', trbfDecodeTime, {
+        splats: count,
+        encoding: meta.trbf.encoding
+    });
     console.log(`⏱️  TRBF decoding: ${trbfDecodeTime.toFixed(2)}ms`);
 
     // Build GSplatData
@@ -471,23 +531,43 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatDa
     // Preload segment files into a map for later use
     const segmentsStartTime = performance.now();
     const zipEntries = new Map<string, ArrayBuffer>();
+    let segmentBytes = 0;
     for (const segment of meta.segments) {
         const segmentData = await loadFile(segment.url);
+        segmentBytes += segmentData.byteLength;
         zipEntries.set(segment.url, segmentData);
     }
     const segmentsTime = performance.now() - segmentsStartTime;
+    profileStage('segments', segmentsTime, {
+        segments: meta.segments.length,
+        bytes: segmentBytes
+    });
     console.log(`⏱️  Segments loading (${meta.segments.length} segments): ${segmentsTime.toFixed(2)}ms`);
 
     const totalParseTime = performance.now() - parseStartTime;
+    profiler.event('sog4d.parse', {
+        type: 'single',
+        splats: count,
+        segments: meta.segments.length,
+        bytes: zipData.byteLength,
+        segmentBytes,
+        ms: totalParseTime
+    });
     console.log('✅ SOG4D parsing complete');
     console.log(`⏱️  Total parsing time: ${totalParseTime.toFixed(2)}ms`);
 
     // Extract cubemap if present
-    let cubemapData: ArrayBuffer | undefined = undefined;
+    let cubemapData: ArrayBuffer | undefined;
     if (meta.cubemap) {
         const cubemapFile = zip.file(meta.cubemap.file);
         if (cubemapFile) {
+            const cubemapStart = profiler.now();
             cubemapData = await cubemapFile.async('arraybuffer');
+            profiler.event('sog4d.cubemap', {
+                file: meta.cubemap.file,
+                bytes: cubemapData.byteLength,
+                ms: profiler.now() - cubemapStart
+            });
             console.log(`📦 Found cubemap: ${meta.cubemap.file} (${(cubemapData.byteLength / 1024).toFixed(2)} KB)`);
         } else {
             console.warn(`⚠️  Cubemap file '${meta.cubemap.file}' not found in ZIP`);
@@ -502,6 +582,7 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatDa
  */
 const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device: any, events?: any): Promise<Asset> => {
     const totalStartTime = performance.now();
+    const filename = assetSource.filename || assetSource.url || 'dynamic-splat.sog4d';
     console.log('🔄 Loading SOG4D file...');
 
     // Load file data
@@ -509,12 +590,20 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
     const source = await createReadSource(assetSource);
     const zipData = await source.arrayBuffer();
     const loadTime = performance.now() - loadStartTime;
+    profileStage('source-read', loadTime, {
+        file: filename,
+        bytes: zipData.byteLength
+    });
     console.log(`⏱️  SOG4D file download/read: ${loadTime.toFixed(2)}ms`);
 
     // Parse SOG4D
     const parseStartTime = performance.now();
     const parseResult = await parseSog4d(zipData);
     const parseTime = performance.now() - parseStartTime;
+    profileStage('parse-total', parseTime, {
+        file: filename,
+        bytes: zipData.byteLength
+    });
     console.log(`⏱️  SOG4D parsing total: ${parseTime.toFixed(2)}ms`);
 
     // Check if this is a multi-splat file
@@ -523,18 +612,25 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
         // parseSog4dMulti now loads static splats first, then dynamic splat
         // So loadedAssets = [static1, static2, ..., dynamic]
         const multiAssets = await parseSog4dMulti(parseResult.zip!, parseResult.mainMeta!, assetSource, assets, device, events);
-        
+
         // Return the last asset (dynamic) so it will be added to scene first
         // Then static splats will be added via _pendingMultiSplatAssets
         // This ensures dynamic splat is added last and gets selected automatically
         const dynamicAsset = multiAssets[multiAssets.length - 1];
         const staticAssets = multiAssets.slice(0, -1);
-        
+        profiler.event('sog4d.load', {
+            file: filename,
+            type: 'multi',
+            assets: multiAssets.length,
+            bytes: zipData.byteLength,
+            totalMs: profiler.now() - totalStartTime
+        });
+
         // Store static assets for later loading (they will be added before dynamic)
         if (events && staticAssets.length > 0) {
             (events as any)._pendingMultiSplatAssets = staticAssets;
         }
-        
+
         // Return dynamic asset (will be added to scene last, so it gets selected)
         return dynamicAsset;
     }
@@ -568,7 +664,6 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
     console.log(`📊 Manifest: start=${meta.start.toFixed(3)}, duration=${meta.duration.toFixed(3)}, fps=${meta.fps}`);
 
     // Create asset
-    const filename = assetSource.filename || assetSource.url || 'dynamic-splat.sog4d';
     const file = {
         url: assetSource.contents ? `local-asset-${getNextAssetId()}` : (assetSource.url ?? filename),
         filename: filename,
@@ -622,9 +717,17 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
         // Use setTimeout to ensure event handlers are registered first
         setTimeout(async () => {
             const totalTime = performance.now() - totalStartTime;
+            profiler.event('sog4d.load', {
+                file: filename,
+                type: 'single',
+                splats: meta.count,
+                segments: meta.segments.length,
+                bytes: zipData.byteLength,
+                totalMs: totalTime
+            });
             console.log(`⏱️  SOG4D loading total time: ${totalTime.toFixed(2)}ms`);
             asset.fire('load', asset);
-            
+
             // Auto-load cubemap if present
             if (cubemapData && meta.cubemap && events) {
                 try {
@@ -636,7 +739,7 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
                     const mimeType = ext === 'webp' ? 'image/webp' : ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/webp';
                     const blob = new Blob([cubemapData], { type: mimeType });
                     const file = new File([blob], meta.cubemap.file, { type: mimeType });
-                    
+
                     // Import cubemap using background handler
                     await events.invoke('background.importFromFile', file);
                     // Auto-show the cubemap
@@ -646,7 +749,7 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
                     console.warn('⚠️  Failed to auto-load cubemap:', error);
                 }
             }
-            
+
             resolve(asset);
         }, 0);
     });
@@ -660,7 +763,8 @@ const parseSog4dMulti = async (zip: any, mainMeta: any, assetSource: AssetSource
     console.log('📦 Parsing multi-splat SOG4D file...');
     console.log(`  Dynamic: ${mainMeta.dynamic ? 'Yes' : 'No'}`);
     console.log(`  Static splats: ${mainMeta.static ? Object.keys(mainMeta.static).length : 0}`);
-    
+
+    const multiStart = profiler.now();
     const loadedAssets: Asset[] = [];
 
     // Load static splats FIRST (so dynamic splat will be selected last)
@@ -668,17 +772,18 @@ const parseSog4dMulti = async (zip: any, mainMeta: any, assetSource: AssetSource
         const staticNames = Object.keys(mainMeta.static);
         for (const staticName of staticNames) {
             console.log(`🔄 Loading ${staticName}...`);
-            
+
             // Extract static folder as a virtual SOG file
             // Check if static folder exists
             const hasStaticFiles = Object.keys(zip.files).some((path: string) => path.startsWith(`${staticName}/`));
             if (!hasStaticFiles) {
                 throw new Error(`Missing ${staticName}/ folder in multi-splat SOG4D`);
             }
-            
+
+            const staticExtractStart = profiler.now();
             const staticZip = new JSZip();
             const staticFilePromises: Promise<void>[] = [];
-            
+
             // Iterate over all files in the main zip and filter by path starting with staticName/
             Object.keys(zip.files).forEach((path: string) => {
                 if (path.startsWith(`${staticName}/`) && !path.endsWith('/')) {
@@ -692,21 +797,34 @@ const parseSog4dMulti = async (zip: any, mainMeta: any, assetSource: AssetSource
                     }
                 }
             });
-            
+
             await Promise.all(staticFilePromises);
             const staticZipBlob = await staticZip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
             const staticZipArrayBuffer = await staticZipBlob.arrayBuffer();
-            
+            profiler.event('sog4d.multi.extract', {
+                kind: 'static',
+                name: staticName,
+                files: staticFilePromises.length,
+                bytes: staticZipArrayBuffer.byteLength,
+                ms: profiler.now() - staticExtractStart
+            });
+
             // Create virtual asset source
             const virtualStaticSource: AssetSource = {
                 filename: `${staticName}.sog`,
                 url: '',
                 contents: staticZipArrayBuffer
             };
-            
+
             // Load static SOG using GSplat loader (which handles SOG format)
             const { loadGsplat } = await import('./gsplat');
+            const staticLoadStart = profiler.now();
             const staticAsset = await loadGsplat(assets, virtualStaticSource);
+            profiler.event('sog4d.multi.asset', {
+                kind: 'static',
+                name: staticName,
+                ms: profiler.now() - staticLoadStart
+            });
             loadedAssets.push(staticAsset);
         }
     }
@@ -714,18 +832,19 @@ const parseSog4dMulti = async (zip: any, mainMeta: any, assetSource: AssetSource
     // Load dynamic splat LAST (so it will be selected automatically)
     if (mainMeta.dynamic) {
         console.log('🔄 Loading dynamic splat...');
-        
+
         // Extract dynamic/ folder as a virtual SOG4D file
         // Check if dynamic folder exists by checking for any file starting with 'dynamic/'
         const hasDynamicFiles = Object.keys(zip.files).some((path: string) => path.startsWith('dynamic/'));
         if (!hasDynamicFiles) {
             throw new Error('Missing dynamic/ folder in multi-splat SOG4D');
         }
-        
+
         // Create a virtual ZIP from dynamic folder
+        const dynamicExtractStart = profiler.now();
         const dynamicZip = new JSZip();
         const dynamicFilePromises: Promise<void>[] = [];
-        
+
         // Iterate over all files in the main zip and filter by path starting with 'dynamic/'
         Object.keys(zip.files).forEach((path: string) => {
             if (path.startsWith('dynamic/') && !path.endsWith('/')) {
@@ -739,20 +858,31 @@ const parseSog4dMulti = async (zip: any, mainMeta: any, assetSource: AssetSource
                 }
             }
         });
-        
+
         await Promise.all(dynamicFilePromises);
         const dynamicZipBlob = await dynamicZip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
         const dynamicZipArrayBuffer = await dynamicZipBlob.arrayBuffer();
-        
+        profiler.event('sog4d.multi.extract', {
+            kind: 'dynamic',
+            files: dynamicFilePromises.length,
+            bytes: dynamicZipArrayBuffer.byteLength,
+            ms: profiler.now() - dynamicExtractStart
+        });
+
         // Create virtual asset source with the extracted ZIP
         const virtualDynamicSource: AssetSource = {
             filename: 'dynamic.sog4d',
             url: '',
             contents: dynamicZipArrayBuffer
         };
-        
+
         // Load dynamic splat using existing loader
+        const dynamicLoadStart = profiler.now();
         const dynamicAsset = await loadSog4d(assets, virtualDynamicSource, device, events);
+        profiler.event('sog4d.multi.asset', {
+            kind: 'dynamic',
+            ms: profiler.now() - dynamicLoadStart
+        });
         loadedAssets.push(dynamicAsset);
     }
 
@@ -767,7 +897,7 @@ const parseSog4dMulti = async (zip: any, mainMeta: any, assetSource: AssetSource
                 const mimeType = ext === 'webp' ? 'image/webp' : ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/webp';
                 const blob = new Blob([cubemapData], { type: mimeType });
                 const file = new File([blob], mainMeta.cubemap.file, { type: mimeType });
-                
+
                 await events.invoke('background.importFromFile', file);
                 await events.invoke('background.autoShow', mainMeta.cubemap.file);
                 console.log('✅ Cubemap auto-loaded and displayed');
@@ -776,6 +906,11 @@ const parseSog4dMulti = async (zip: any, mainMeta: any, assetSource: AssetSource
             console.warn('⚠️  Failed to auto-load cubemap:', error);
         }
     }
+
+    profiler.event('sog4d.multi.parse', {
+        assets: loadedAssets.length,
+        ms: profiler.now() - multiStart
+    });
 
     return loadedAssets;
 };

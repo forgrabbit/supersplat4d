@@ -20,6 +20,7 @@ import { Events } from './events';
 import { InfiniteGrid as Grid } from './infinite-grid';
 import { Outline } from './outline';
 import { PCApp } from './pc-app';
+import { profiler } from './profiling';
 import { SceneConfig } from './scene-config';
 import { SceneState } from './scene-state';
 import { Splat } from './splat';
@@ -94,6 +95,10 @@ class Scene {
 
         // this is required to get full res AR mode backbuffer
         this.app.graphicsDevice.maxPixelRatio = window.devicePixelRatio;
+        profiler.attachGraphicsDevice(this.app.graphicsDevice);
+        (this.app.scene as any).on('gsplat:sort:profile', (details: Record<string, unknown>) => {
+            this.onGsplatSortProfile(details);
+        });
 
         // configure application canvas
         const observer = new ResizeObserver((entries: ResizeObserverEntry[]) => {
@@ -226,13 +231,15 @@ class Scene {
         // start the app
         this.app.start();
 
-        // Setup MiniStats with Sort, Render, VRAM, GSplats (requires profiler build)
+        // Setup MiniStats with profiling-oriented counters. The JSON trace is authoritative.
         const msOptions = MiniStats.getDefaultOptions() as { startSizeIndex: number; stats: Array<{ name: string; stats: string[]; decimalPlaces?: number; unitsName?: string; watermark?: number; multiplier?: number }> };
         msOptions.startSizeIndex = 0;
         msOptions.stats.push(
             { name: 'VRAM', stats: ['vram.tex'], decimalPlaces: 1, multiplier: 1 / (1024 * 1024), unitsName: 'MB', watermark: 1024 },
-            { name: 'GSplats', stats: ['frame.gsplats'], decimalPlaces: 3, multiplier: 1 / 1000000, unitsName: 'M', watermark: 10 },
-            { name: 'Sort', stats: ['frame.sortTime'], decimalPlaces: 1, unitsName: 'ms', watermark: 5 },
+            { name: 'Total', stats: ['frame.profileTotalSplats'], decimalPlaces: 3, multiplier: 1 / 1000000, unitsName: 'M', watermark: 10 },
+            { name: 'Active', stats: ['frame.profileActiveSplats'], decimalPlaces: 3, multiplier: 1 / 1000000, unitsName: 'M', watermark: 10 },
+            { name: 'Draw', stats: ['frame.profileDrawSplats'], decimalPlaces: 3, multiplier: 1 / 1000000, unitsName: 'M', watermark: 10 },
+            { name: 'Sort', stats: ['frame.gsplatSort'], decimalPlaces: 1, unitsName: 'ms', watermark: 5 },
             { name: 'Render', stats: ['frame.renderTime'], decimalPlaces: 1, unitsName: 'ms', watermark: 16 },
             { name: 'FPS', stats: ['frame.fps'], decimalPlaces: 1, watermark: 60 }
         );
@@ -333,6 +340,12 @@ class Scene {
     }
 
     private onUpdate(deltaTime: number) {
+        const timelineFrame = this.events.functions.has('timeline.frame') ? this.events.invoke('timeline.frame') as number : null;
+        profiler.startFrame(this.app.frame, {
+            timelineFrame,
+            deltaTimeMs: deltaTime * 1000
+        });
+
         // allow elements to update
         this.forEachElement(e => e.onUpdate(deltaTime));
 
@@ -383,17 +396,31 @@ class Scene {
         this.targetSize.width = Math.ceil(this.app.graphicsDevice.width / this.config.camera.pixelScale);
         this.targetSize.height = Math.ceil(this.app.graphicsDevice.height / this.config.camera.pixelScale);
 
-        // Update gsplat count for MiniStats (non-unified mode has no engine auto-count)
+        // Update splat counters for MiniStats and the profiling trace.
         let totalGsplats = 0;
+        let activeGsplats = 0;
+        let drawGsplats = 0;
         this.forEachElement((e: Element) => {
             if (e.type === ElementType.splat) {
                 const splat = e as Splat;
                 if (splat.visible && splat.entity.gsplat?.instance) {
                     totalGsplats += splat.numSplats;
+                    activeGsplats += splat.isDynamic ? (splat.activeIndices?.length ?? 0) : splat.numSplats;
+                    drawGsplats += splat.lastDrawSplats ?? 0;
                 }
             }
         });
         (this.app.renderer as { _gsplatCount?: number })._gsplatCount = totalGsplats;
+        (this.app.stats.frame as any).profileTotalSplats = totalGsplats;
+        (this.app.stats.frame as any).profileActiveSplats = activeGsplats;
+        (this.app.stats.frame as any).profileDrawSplats = drawGsplats;
+        profiler.setFrameValues({
+            totalSplats: totalGsplats,
+            activeSplats: activeGsplats,
+            drawSplats: drawGsplats,
+            canvasWidth: this.app.graphicsDevice.width,
+            canvasHeight: this.app.graphicsDevice.height
+        });
 
         this.forEachElement(e => e.onPreRender());
 
@@ -431,7 +458,66 @@ class Scene {
     private onPostRender() {
         this.forEachElement(e => e.onPostRender());
 
+        const stats = this.app.stats as any;
+        const gpuProfiler = (this.app.graphicsDevice as any).gpuProfiler;
+        profiler.setFrameValues({
+            frameMs: stats.frame.ms,
+            fps: stats.frame.fps,
+            cpuUpdateMs: stats.frame.updateTime,
+            cpuRenderMs: stats.frame.renderTime,
+            workerSortMs: stats.frame.gsplatSort,
+            gpuFrameMs: gpuProfiler?._frameTime ?? null,
+            gpuTimerSupported: !!gpuProfiler,
+            drawCallsTotal: stats.drawCalls.total,
+            vramTexBytes: stats.vram.tex,
+            vramTotalBytes: stats.vram.totalUsed,
+            shaderCompileTotalMs: stats.shaders.compileTime,
+            shaderVsCompiled: stats.shaders.vsCompiled,
+            shaderFsCompiled: stats.shaders.fsCompiled,
+            shaderLinked: stats.shaders.linked
+        });
+
         this.events.fire('postrender');
+    }
+
+    private onGsplatSortProfile(details: Record<string, unknown>) {
+        const readNumber = (name: string) => {
+            const value = details[name];
+            return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+        };
+
+        const mainPostAbs = readNumber('mainPostAbs');
+        const workerReceiveAbs = readNumber('workerReceiveAbs');
+        const workerStartAbs = readNumber('workerStartAbs');
+        const workerEndAbs = readNumber('workerEndAbs');
+        const mainReceiveAbs = readNumber('mainReceiveAbs');
+        const mainApplyEndAbs = readNumber('mainApplyEndAbs');
+        const workerSortMs = readNumber('workerSortMs') || readNumber('sortTime');
+        const queueMs = mainPostAbs && workerReceiveAbs ? Math.max(0, workerReceiveAbs - mainPostAbs) : 0;
+        const workerWaitMs = workerReceiveAbs && workerStartAbs ? Math.max(0, workerStartAbs - workerReceiveAbs) : 0;
+        const returnWaitMs = workerEndAbs && mainReceiveAbs ? Math.max(0, mainReceiveAbs - workerEndAbs) : 0;
+        const roundTripMs = mainPostAbs && mainApplyEndAbs ? Math.max(0, mainApplyEndAbs - mainPostAbs) : 0;
+        const applyMs = readNumber('mainApplyMs');
+        const setMappingMs = readNumber('mainSetMappingMs');
+        const drawSplats = readNumber('drawSplats') || readNumber('count');
+        const activeSplats = readNumber('activeSplats') || readNumber('mappingLength');
+
+        profiler.addFrameValue('sortQueueMs', queueMs);
+        profiler.addFrameValue('sortWorkerWaitMs', workerWaitMs);
+        profiler.addFrameValue('sortReturnWaitMs', returnWaitMs);
+        profiler.addFrameValue('sortRoundTripMs', roundTripMs);
+        profiler.addFrameValue('sortApplyUploadMs', applyMs);
+        profiler.addFrameValue('setMappingMs', setMappingMs);
+        profiler.addFrameValue('workerSortMeasuredMs', workerSortMs);
+        profiler.maxFrameValue('sortMaxActiveSplats', activeSplats);
+        profiler.maxFrameValue('sortMaxDrawSplats', drawSplats);
+        profiler.event('gsplat.sort.profile', {
+            ...details,
+            sortQueueMs: queueMs,
+            sortWorkerWaitMs: workerWaitMs,
+            sortReturnWaitMs: returnWaitMs,
+            sortRoundTripMs: roundTripMs
+        });
     }
 }
 

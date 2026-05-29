@@ -23,8 +23,12 @@ if (process.env.BUILD_TYPE === 'prod') {
 const BUILD_TYPE = process.env.BUILD_TYPE || 'profiler';
 const BUILD_ID = new Date().toISOString();
 const engineSuffix = BUILD_TYPE === 'debug' ? '.dbg' : BUILD_TYPE === 'profiler' ? '.prf' : '';
-const ENGINE_DIR = path.resolve(`node_modules/playcanvas/build/playcanvas${engineSuffix}/src/index.js`);
+const USE_LOCAL_ENGINE = process.env.USE_LOCAL_ENGINE === '1' || (process.env.USE_LOCAL_ENGINE !== '0' && BUILD_TYPE === 'profiler');
+const ENGINE_DIR = USE_LOCAL_ENGINE ?
+    path.resolve('engine/src/index.js') :
+    path.resolve(`node_modules/playcanvas/build/playcanvas${engineSuffix}/src/index.js`);
 const PCUI_DIR = path.resolve('node_modules/@playcanvas/pcui');
+const FFLATE_DIR = path.resolve(`node_modules/playcanvas/build/playcanvas${engineSuffix}/modules/fflate/esm/browser.js`);
 const HREF = process.env.BASE_HREF || '';
 
 const buildIdReplace = () => ({
@@ -90,6 +94,7 @@ const application = {
         alias({
             entries: {
                 'playcanvas': ENGINE_DIR,
+                'fflate': FFLATE_DIR,
                 '@playcanvas/pcui': PCUI_DIR
             }
         }),
