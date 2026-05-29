@@ -8,7 +8,7 @@ import { Splat } from './splat';
 import { State } from './splat-state';
 import type { DynamicExportOptions } from './ui/dynamic-export-dialog';
 import type { DynManifest } from './loaders/dyn';
-import { formatCfgArgsCulling, SplatTransformCache } from './splat-serialize';
+import { SplatTransformCache } from './splat-serialize';
 
 // JSZip is loaded globally via script tag
 declare const JSZip: any;
@@ -211,15 +211,14 @@ const serializeDynamicPly = async (
         throw new Error('No visible splats in the selected time range');
     }
     
-    const prefixOrder = [
+    // Define property order to match standard PLY format
+    // Order: x y z trbf_center trbf_scale nx ny nz motion_0 motion_1 motion_2 f_dc_0 f_dc_1 f_dc_2 opacity scale_0 scale_1 scale_2 rot_0 rot_1 rot_2 rot_3
+    const propertyOrder = [
         'x', 'y', 'z',
         'trbf_center', 'trbf_scale',
         'nx', 'ny', 'nz',
         'motion_0', 'motion_1', 'motion_2',
-        'f_dc_0', 'f_dc_1', 'f_dc_2'
-    ];
-
-    const tailOrder = [
+        'f_dc_0', 'f_dc_1', 'f_dc_2',
         'opacity',
         'scale_0', 'scale_1', 'scale_2',
         'rot_0', 'rot_1', 'rot_2', 'rot_3'
@@ -241,46 +240,24 @@ const serializeDynamicPly = async (
         propMap.set(prop.name, prop);
     }
     
-    const orderedPropNames: string[] = [];
-
-    // 1) Fixed prefix order
-    for (const name of prefixOrder) {
-        if (propMap.has(name)) orderedPropNames.push(name);
-    }
-
-    // 2) If spherical harmonics residuals exist, place them immediately after f_dc_*
-    const fRestNames = allProps
-        .map((p: any) => p.name)
-        .filter((name: string) => /^f_rest_\d+$/.test(name))
-        .sort((a: string, b: string) => parseInt(a.slice(7), 10) - parseInt(b.slice(7), 10));
-
-    for (const name of fRestNames) {
-        if (propMap.has(name)) orderedPropNames.push(name);
-    }
-
-    // 3) Preserve remaining properties in their original order, excluding tail group
-    const tailSet = new Set(tailOrder);
-    for (const prop of allProps) {
-        const name = prop.name;
-        if (orderedPropNames.includes(name)) continue;
-        if (tailSet.has(name)) continue;
-        orderedPropNames.push(name);
-    }
-
-    // 4) Fixed tail order
-    for (const name of tailOrder) {
-        if (propMap.has(name)) orderedPropNames.push(name);
-    }
-
-    // Build props array in the desired order
+    // Build props array in the desired order, only including properties that exist
     const props: any[] = [];
-    for (const name of orderedPropNames) {
-        const prop = propMap.get(name);
-        if (prop) props.push(prop);
+    for (const propName of propertyOrder) {
+        const prop = propMap.get(propName);
+        if (prop) {
+            props.push(prop);
+        }
+    }
+    
+    // Add any remaining properties that weren't in the standard order (e.g., f_rest_*)
+    for (const prop of allProps) {
+        if (!propertyOrder.includes(prop.name)) {
+            props.push(prop);
+        }
     }
     
     // Build header with cfg_args
-    const cfgArgs = `comment cfg_args: start=${exportStart} duration=${exportDuration} fps=${manifest.fps} sh_degree=${manifest.sh_degree || 0} culling=${formatCfgArgsCulling(splat.visibilityCullThreshold)}`;
+    const cfgArgs = `comment cfg_args: start=${exportStart} duration=${exportDuration} fps=${manifest.fps} sh_degree=${manifest.sh_degree || 0}`;
     
     const headerLines = [
         'ply',
@@ -364,8 +341,7 @@ const serializeDynamicPly = async (
         let bm0 = 0, bm1 = 0, bm2 = 0;
         if (hasMotion) {
             tmpVec.set(rawM0![i], rawM1![i], rawM2![i]);
-            // Apply rotation/scale only to motion (direction), no translation.
-            transformCache.getMat(i).transformVector(tmpVec, tmpVec);
+            transformCache.getMat(i).transformDirection(tmpVec, tmpVec);
             bm0 = tmpVec.x; bm1 = tmpVec.y; bm2 = tmpVec.z;
         }
 
@@ -591,7 +567,7 @@ const serializeSog4d = async (
     writer: Writer,
     progress?: (p: number, stage: string) => void
 ): Promise<void> => {
-    const { manifest, splatData, splat } = info;
+    const { manifest, splatData } = info;
     const { start: exportStart, duration: exportDuration, filename } = options;
     
     console.log(`📤 Exporting SOG4D: start=${exportStart}, duration=${exportDuration}`);
@@ -948,7 +924,6 @@ const serializeSog4d = async (
         width,
         height,
         sh_degree: manifest.sh_degree || 0,
-        culling: splat.visibilityCullThreshold,
         start: exportStart,
         duration: exportDuration,
         fps: manifest.fps,
