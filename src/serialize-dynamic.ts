@@ -305,6 +305,23 @@ const serializeDynamicPly = async (
     const rawSc0 = propMap.get('scale_0')?.storage as Float32Array | null;
     const rawSc1 = propMap.get('scale_1')?.storage as Float32Array | null;
     const rawSc2 = propMap.get('scale_2')?.storage as Float32Array | null;
+    const svSiteLobes = [...new Set(props.map((prop: any) => prop.name.match(/^v_site_(\d+)_[xyz]$/)?.[1]).filter((lobe): lobe is string => !!lobe))]
+    .filter(lobe => ['x', 'y', 'z'].every(axis => propMap.has(`v_site_${lobe}_${axis}`)));
+    const svSiteProps = svSiteLobes.map(lobe => ({
+        lobe,
+        rawX: propMap.get(`v_site_${lobe}_x`)?.storage as Float32Array,
+        rawY: propMap.get(`v_site_${lobe}_y`)?.storage as Float32Array,
+        rawZ: propMap.get(`v_site_${lobe}_z`)?.storage as Float32Array,
+        bx: 0,
+        by: 0,
+        bz: 0
+    }));
+    const svSitePropLookup = new Map<string, { site: typeof svSiteProps[number], axis: 'x' | 'y' | 'z' }>();
+    for (const site of svSiteProps) {
+        svSitePropLookup.set(`v_site_${site.lobe}_x`, { site, axis: 'x' });
+        svSitePropLookup.set(`v_site_${site.lobe}_y`, { site, axis: 'y' });
+        svSitePropLookup.set(`v_site_${site.lobe}_z`, { site, axis: 'z' });
+    }
 
     const hasPos    = rawX && rawY && rawZ;
     const hasMotion = rawM0 && rawM1 && rawM2;
@@ -341,8 +358,17 @@ const serializeDynamicPly = async (
         let bm0 = 0, bm1 = 0, bm2 = 0;
         if (hasMotion) {
             tmpVec.set(rawM0![i], rawM1![i], rawM2![i]);
-            transformCache.getMat(i).transformDirection(tmpVec, tmpVec);
+            transformCache.getMat(i).transformVector(tmpVec, tmpVec);
             bm0 = tmpVec.x; bm1 = tmpVec.y; bm2 = tmpVec.z;
+        }
+
+        for (const site of svSiteProps) {
+            tmpVec.set(site.rawX[i], site.rawY[i], site.rawZ[i]);
+            transformCache.getMat(i).transformVector(tmpVec, tmpVec);
+            const siteLen = Math.max(1e-6, Math.sqrt(tmpVec.x * tmpVec.x + tmpVec.y * tmpVec.y + tmpVec.z * tmpVec.z));
+            site.bx = tmpVec.x / siteLen;
+            site.by = tmpVec.y / siteLen;
+            site.bz = tmpVec.z / siteLen;
         }
 
         // Rotation quaternion: composite transform rotation onto splat rotation.
@@ -388,7 +414,15 @@ const serializeDynamicPly = async (
                 // trbf_scale is stored as exp() in memory, PLY wants log()
                 case 'trbf_scale': value = Math.log(Math.max(storage[i], 1e-8)); break;
                 // trbf_center, f_dc_*, opacity, nx, ny, nz, f_rest_* — no transform needed
-                default: value = storage[i];
+                default: {
+                    const svSite = svSitePropLookup.get(prop.name);
+                    if (svSite) {
+                        value = svSite.axis === 'x' ? svSite.site.bx : svSite.axis === 'y' ? svSite.site.by : svSite.site.bz;
+                    } else {
+                        value = storage[i];
+                    }
+                    break;
+                }
             }
             
             if (prop.type === 'uchar') {

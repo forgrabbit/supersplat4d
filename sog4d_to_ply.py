@@ -243,6 +243,47 @@ def decode_trbf(zf: zipfile.ZipFile, prefix: str, meta: Dict, count: int) -> Arr
     }
 
 
+def decode_quantized16_field_groups(
+    zf: zipfile.ZipFile,
+    prefix: str,
+    groups_meta: Sequence[Dict],
+    count: int,
+) -> ArrayMap:
+    fields: ArrayMap = {}
+    for group_meta in groups_meta:
+        files = field_files(group_meta, [])
+        if len(files) != 2:
+            raise ValueError(f"Expected two files for quantized16 group, got {files}")
+        tex_l, _, _ = decode_rgba(zf, zip_join(prefix, files[0]))
+        tex_u, _, _ = decode_rgba(zf, zip_join(prefix, files[1]))
+        tex_l = tex_l[:count]
+        tex_u = tex_u[:count]
+        for channel_idx, field_name in enumerate(group_meta["names"]):
+            fields[field_name] = dequantize16(
+                tex_l[:, channel_idx],
+                tex_u[:, channel_idx],
+                group_meta["mins"][channel_idx],
+                group_meta["maxs"][channel_idx],
+            )
+    return fields
+
+
+def decode_visibility(zf: zipfile.ZipFile, prefix: str, meta: Dict, count: int) -> ArrayMap:
+    visibility_meta = meta.get("visibility")
+    if not visibility_meta:
+        return {}
+
+    encoding = visibility_meta.get("encoding", "quantize16")
+    if encoding != "quantize16":
+        raise ValueError(f"Unsupported visibility encoding: {encoding}")
+    return decode_quantized16_field_groups(
+        zf=zf,
+        prefix=prefix,
+        groups_meta=visibility_meta.get("groups", []),
+        count=count,
+    )
+
+
 def sh_rest_count_from_degree(sh_degree: int) -> int:
     return ((int(sh_degree) + 1) ** 2 - 1) * 3
 
@@ -304,6 +345,7 @@ def decode_dynamic_sog4d(zf: zipfile.ZipFile, prefix: str, meta: Dict) -> ArrayM
     fields = decode_static_sog(zf, prefix, meta)
     fields.update(decode_motion(zf, prefix, meta, count))
     fields.update(decode_trbf(zf, prefix, meta, count))
+    fields.update(decode_visibility(zf, prefix, meta, count))
 
     if "shN" not in meta and int(meta.get("sh_degree", 0)) > 0:
         add_zero_sh_rest(fields, count, int(meta["sh_degree"]))
@@ -321,6 +363,36 @@ def property_names(fields: ArrayMap, dynamic: bool) -> List[str]:
     ]
     rest_names.sort(key=lambda x: int(x.rsplit("_", 1)[1]))
     names.extend(rest_names)
+
+    visibility_names: List[str] = []
+    token_set = set()
+    for name in fields:
+        if name.startswith("v_site_"):
+            parts = name.split("_")
+            if len(parts) >= 4:
+                token_set.add(parts[2])
+        elif name.startswith("v_val_") or name.startswith("v_tau_"):
+            parts = name.split("_")
+            if len(parts) >= 3:
+                token_set.add(parts[2])
+
+    for token in sorted(token_set, key=lambda value: int(value)):
+        for axis in ("x", "y", "z"):
+            field_name = f"v_site_{token}_{axis}"
+            if field_name in fields:
+                visibility_names.append(field_name)
+        for prefix in ("v_val", "v_tau"):
+            field_name = f"{prefix}_{token}"
+            if field_name in fields:
+                visibility_names.append(field_name)
+
+    sh_visibility_names = [
+        name for name in fields
+        if name.startswith("v_sh_")
+    ]
+    sh_visibility_names.sort(key=lambda x: int(x.rsplit("_", 1)[1]))
+    visibility_names.extend(sh_visibility_names)
+    names.extend(visibility_names)
 
     extras = sorted(name for name in fields if name not in set(names))
     names.extend(extras)

@@ -1,18 +1,58 @@
 import { Asset, AssetRegistry, GSplatData, GSplatResource } from 'playcanvas';
 
 import { getNextAssetId } from './asset-id-counter';
-import { AssetSource } from './asset-source';
+import { AssetSource, createReadSource } from './asset-source';
+import { parseAndAddCustomVisibilityProperties, plyHasCustomVisibilityProperties } from './ply-visibility';
 
 export type LoadGsplatOptions = {
     /** From PLY `comment cfg_args: culling=...`; default 0.005 when omitted. */
     visibilityCullThreshold?: number;
 };
 
+const readHeaderBuffer = async (assetSource: AssetSource) => {
+    if (assetSource.contents instanceof Response) {
+        return assetSource.contents.clone().arrayBuffer();
+    }
+    if (assetSource.contents) {
+        return assetSource.contents.slice(0, 1024 * 1024).arrayBuffer();
+    }
+
+    const source = await createReadSource(assetSource, 0, 1024 * 1024);
+    return source.arrayBuffer();
+};
+
+const readFullBuffer = async (assetSource: AssetSource) => {
+    if (assetSource.contents instanceof Response) {
+        return assetSource.contents.clone().arrayBuffer();
+    }
+    if (assetSource.contents) {
+        return assetSource.contents.arrayBuffer();
+    }
+
+    const source = await createReadSource(assetSource);
+    return source.arrayBuffer();
+};
+
 // use the engine to load a gsplat asset (ply, compressed.ply, sog, sog-bundle)
-const loadGsplat = (assets: AssetRegistry, assetSource: AssetSource, loadOptions?: LoadGsplatOptions) => {
+const loadGsplat = async (assets: AssetRegistry, assetSource: AssetSource, loadOptions?: LoadGsplatOptions) => {
     const totalStartTime = performance.now();
     console.log('🔄 Loading PLY file...');
-    const contents = assetSource.contents && (assetSource.contents instanceof Response ? assetSource.contents : new Response(assetSource.contents));
+    const sourceName = (assetSource.filename || assetSource.url || '').toLowerCase();
+    const shouldParseVisibility = sourceName.endsWith('.ply');
+    let hasCustomVisibility = false;
+    let cachedRawData: ArrayBuffer | null = null;
+
+    if (shouldParseVisibility) {
+        const headerData = await readHeaderBuffer(assetSource);
+        hasCustomVisibility = plyHasCustomVisibilityProperties(headerData);
+        if (hasCustomVisibility) {
+            cachedRawData = await readFullBuffer(assetSource);
+        }
+    }
+
+    const contents = cachedRawData ?
+        new Response(cachedRawData) :
+        assetSource.contents && (assetSource.contents instanceof Response ? assetSource.contents : new Response(assetSource.contents));
 
     const file = {
         // we must construct a unique url if contents is provided
@@ -25,7 +65,7 @@ const loadGsplat = (assets: AssetRegistry, assetSource: AssetSource, loadOptions
         // decompress data on load
         decompress: true,
         // disable morton re-ordering when loading animation frames
-        reorder: !(assetSource.animationFrame ?? false)
+        reorder: !(assetSource.animationFrame ?? false) && !hasCustomVisibility
     };
 
     const options = {
@@ -43,6 +83,18 @@ const loadGsplat = (assets: AssetRegistry, assetSource: AssetSource, loadOptions
         );
 
         asset.on('load:data', (data: GSplatData) => {
+            try {
+                if (data instanceof GSplatData && cachedRawData) {
+                    const added = parseAndAddCustomVisibilityProperties(data, cachedRawData);
+                    if (added > 0) {
+                        console.log(`Added ${added} custom visibility properties from PLY`);
+                    }
+                }
+            } catch (error) {
+                reject(error);
+                return;
+            }
+
             // support loading 2d splats by adding scale_2 property with almost 0 scale
             if (data instanceof GSplatData && data.getProp('scale_0') && data.getProp('scale_1') && !data.getProp('scale_2')) {
                 const scale2 = new Float32Array(data.numSplats).fill(Math.log(1e-6));

@@ -306,6 +306,8 @@ class SingleSplat {
         const hasScale = ['scale_0', 'scale_1', 'scale_2'].every(v => data.hasOwnProperty(v));
         const hasColor = ['f_dc_0', 'f_dc_1', 'f_dc_2'].every(v => data.hasOwnProperty(v));
         const hasOpacity = data.hasOwnProperty('opacity');
+        const svSiteLobes = [...new Set(members.map(name => name.match(/^v_site_(\d+)_[xyz]$/)?.[1]).filter((lobe): lobe is string => !!lobe))]
+        .filter(lobe => ['x', 'y', 'z'].every(axis => data.hasOwnProperty(`v_site_${lobe}_${axis}`)));
 
         const dstSHBands = calcSHBands(new Set(Object.keys(data)));
         const dstSHCoeffs = shBandCoeffs[dstSHBands];
@@ -370,6 +372,20 @@ class SingleSplat {
                 v.set(data.x, data.y, data.z);
                 mat.transformPoint(v, v);
                 [data.x, data.y, data.z] = [v.x, v.y, v.z];
+            }
+
+            if (svSiteLobes.length > 0) {
+                for (const lobe of svSiteLobes) {
+                    const xName = `v_site_${lobe}_x`;
+                    const yName = `v_site_${lobe}_y`;
+                    const zName = `v_site_${lobe}_z`;
+                    v.set(data[xName], data[yName], data[zName]);
+                    mat.transformVector(v, v);
+                    const siteLen = Math.max(1e-6, Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z));
+                    data[xName] = v.x / siteLen;
+                    data[yName] = v.y / siteLen;
+                    data[zName] = v.z / siteLen;
+                }
             }
 
             if (hasRotation) {
