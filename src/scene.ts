@@ -333,11 +333,11 @@ class Scene {
     }
 
     private onUpdate(deltaTime: number) {
+        // Advance global state such as timeline playback before scene elements sample it.
+        this.events.fire('update', deltaTime);
+
         // allow elements to update
         this.forEachElement(e => e.onUpdate(deltaTime));
-
-        // fire global update
-        this.events.fire('update', deltaTime);
 
         // fire a 'serialize' event which listers will use to store their state. we'll use
         // this to decide if the view has changed and so requires rendering.

@@ -33,6 +33,7 @@ import { GyroscopeController } from './gyroscope-controller';
 import { Serializer } from './serializer';
 import { Splat } from './splat';
 import { TweenValue } from './tween-value';
+import { isMobileDevice } from './utils/device-detection';
 
 // calculate the forward vector given azimuth and elevation
 const calcForwardVec = (result: Vec3, azim: number, elev: number) => {
@@ -58,6 +59,14 @@ const v4 = new Vec4();
 
 // modulo dealing with negative numbers
 const mod = (n: number, m: number) => ((n % m) + m) % m;
+
+const MOBILE_CAMERA_LIMITS = {
+    minElev: -18,
+    maxElev: 12,
+    minDistanceRadiusFactor: 0.85,
+    torsoMinHeight: 0.35,
+    torsoMaxHeight: 0.68
+};
 
 class Camera extends Element {
     controller: PointerController;
@@ -90,6 +99,8 @@ class Camera extends Element {
     suppressFinalBlit = false;
 
     renderOverlays = true;
+
+    mobileCameraLimits = false;
 
     updateCameraUniforms: () => void;
 
@@ -201,13 +212,16 @@ class Camera extends Element {
     }
 
     setFocalPoint(point: Vec3, dampingFactorFactor: number = 1) {
+        point = this.clampMobileFocalPoint(point);
         this.focalPointTween.goto(point, dampingFactorFactor * this.scene.config.controls.dampingFactor);
     }
 
     setAzimElev(azim: number, elev: number, dampingFactorFactor: number = 1) {
         // clamp
         azim = mod(azim, 360);
-        elev = Math.max(this.minElev, Math.min(this.maxElev, elev));
+        const minElev = this.mobileCameraLimits ? Math.max(this.minElev, MOBILE_CAMERA_LIMITS.minElev) : this.minElev;
+        const maxElev = this.mobileCameraLimits ? Math.min(this.maxElev, MOBILE_CAMERA_LIMITS.maxElev) : this.maxElev;
+        elev = Math.max(minElev, Math.min(maxElev, elev));
 
         const t = this.azimElevTween;
         t.goto({ azim, elev }, dampingFactorFactor * this.scene.config.controls.dampingFactor);
@@ -225,12 +239,71 @@ class Camera extends Element {
 
     setDistance(distance: number, dampingFactorFactor: number = 1) {
         const controls = this.scene.config.controls;
+        const minZoom = this.mobileCameraLimits ?
+            Math.max(controls.minZoom, this.getMobileMinDistance()) :
+            controls.minZoom;
 
         // clamp
-        distance = Math.max(controls.minZoom, Math.min(controls.maxZoom, distance));
+        distance = Math.max(minZoom, Math.min(controls.maxZoom, distance));
 
         const t = this.distanceTween;
         t.goto({ distance }, dampingFactorFactor * controls.dampingFactor);
+    }
+
+    private getMobileTargetBound() {
+        let fallbackBound: BoundingBox | null = null;
+
+        for (const element of this.scene.elements) {
+            if (element.type !== ElementType.splat) {
+                continue;
+            }
+
+            const splat = element as Splat;
+            if (!splat.visible || !splat.worldBound) {
+                continue;
+            }
+
+            if (splat.isDynamic) {
+                return splat.worldBound;
+            }
+
+            fallbackBound ??= splat.worldBound;
+        }
+
+        return fallbackBound ?? this.scene.bound;
+    }
+
+    private getMobileMinDistance() {
+        const bound = this.getMobileTargetBound();
+        const targetRadius = bound?.halfExtents.length() ?? 0;
+
+        if (!isFinite(targetRadius) || targetRadius <= 1e-6) {
+            return this.scene.config.controls.minZoom;
+        }
+
+        return MOBILE_CAMERA_LIMITS.minDistanceRadiusFactor * targetRadius * this.fovFactor / this.sceneRadius;
+    }
+
+    private clampMobileFocalPoint(point: Vec3) {
+        if (!this.mobileCameraLimits) {
+            return point;
+        }
+
+        const bound = this.getMobileTargetBound();
+        const halfHeight = bound?.halfExtents.y ?? 0;
+
+        if (!isFinite(halfHeight) || halfHeight <= 1e-6) {
+            return point;
+        }
+
+        const minY = bound.center.y - halfHeight;
+        const height = halfHeight * 2;
+        const torsoMinY = minY + height * MOBILE_CAMERA_LIMITS.torsoMinHeight;
+        const torsoMaxY = minY + height * MOBILE_CAMERA_LIMITS.torsoMaxHeight;
+
+        vec.copy(point);
+        vec.y = Math.max(torsoMinY, Math.min(torsoMaxY, vec.y));
+        return vec;
     }
 
     // Update FOV dynamically based on camera distance
@@ -336,6 +409,8 @@ class Camera extends Element {
         }
 
         const target = document.getElementById('canvas-container');
+
+        this.mobileCameraLimits = isMobileDevice();
 
         this.controller = new PointerController(this, target);
 

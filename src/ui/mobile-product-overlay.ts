@@ -187,7 +187,7 @@ class MobileProductOverlay extends Container {
             this.setProduct(name);
         });
 
-        this.setProduct(events.invoke('doc.name') as string | null);
+        this.hidden = true;
     }
 
     private setProduct(name: string | null) {

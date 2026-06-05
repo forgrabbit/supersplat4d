@@ -16,6 +16,7 @@ import argparse
 import io
 import json
 import os
+import re
 import zipfile
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -35,6 +36,30 @@ except ImportError:
 # Constants
 # =============================================================================
 
+DEFAULT_CULLING_THRESHOLD = 0.005
+
+
+def get_culling_threshold(cfg: Dict[str, float], override: Optional[float] = None) -> float:
+    """Return the effective opacity/visibility culling threshold for export."""
+    raw = override if override is not None else cfg.get('culling', DEFAULT_CULLING_THRESHOLD)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        print(f"Warning: Invalid culling threshold {raw!r}, using {DEFAULT_CULLING_THRESHOLD}")
+        return DEFAULT_CULLING_THRESHOLD
+
+    if not np.isfinite(value) or value < 0:
+        print(f"Warning: Invalid culling threshold {raw!r}, using {DEFAULT_CULLING_THRESHOLD}")
+        return DEFAULT_CULLING_THRESHOLD
+
+    return value
+
+
+def add_culling_metadata(meta: Dict, threshold: float) -> None:
+    """Store both legacy and explicit culling-threshold metadata keys."""
+    value = float(threshold)
+    meta['culling'] = value
+    meta['visibility_cull_threshold'] = value
 
 
 # =============================================================================
@@ -52,19 +77,12 @@ def parse_cfg_args_text(text: str) -> Dict[str, float]:
     # Try old Namespace format first
     if text.startswith('Namespace(') and text.endswith(')'):
         content = text[len('Namespace('):-1]
-        parts = content.split(',')
     else:
-        # New format: space or comma separated key=value pairs
-        parts = text.replace(',', ' ').split()
+        content = text
     
-    for part in parts:
-        part = part.strip()
-        if '=' not in part:
-            continue
-
-        key, value = part.split('=', 1)
-        key = key.strip()
-        value = value.strip()
+    for match in re.finditer(r'([A-Za-z_]\w*)\s*=\s*([^,\s)]+)', content):
+        key = match.group(1).strip()
+        value = match.group(2).strip().strip('\'"')
 
         try:
             if '.' in value or 'e' in value.lower():
@@ -1450,8 +1468,7 @@ def write_sog4d_multi(output_path: str, dynamic_data: SplatData, static_data_lis
         }
         if dynamic_visibility_meta is not None:
             dynamic_meta['visibility'] = dynamic_visibility_meta
-        if 'culling' in cfg:
-            dynamic_meta['culling'] = float(cfg['culling'])
+        add_culling_metadata(dynamic_meta, opacity_threshold)
         zf.writestr('dynamic/meta.json', json.dumps(dynamic_meta, indent=2))
         
         # Write static splats
@@ -1497,6 +1514,8 @@ def write_sog4d_multi(output_path: str, dynamic_data: SplatData, static_data_lis
             
             if static_shN_meta is not None:
                 static_meta['shN'] = static_shN_meta
+
+            add_culling_metadata(static_meta, opacity_threshold)
             
             zf.writestr(f'{static_name}/meta.json', json.dumps(static_meta, indent=2))
             static_metas[static_name] = {
@@ -1558,6 +1577,8 @@ def write_sog4d_multi(output_path: str, dynamic_data: SplatData, static_data_lis
         
         if cubemap_info:
             main_meta['cubemap'] = cubemap_info
+
+        add_culling_metadata(main_meta, opacity_threshold)
         
         zf.writestr('meta.json', json.dumps(main_meta, indent=2))
     
@@ -1570,6 +1591,7 @@ def write_sog4d_multi(output_path: str, dynamic_data: SplatData, static_data_lis
     for idx, static_data in enumerate(static_data_list):
         print(f"Static {idx + 1} splats: {static_data.num}")
     print(f"Duration: {cfg.get('duration', 0):.2f}s @ {cfg.get('fps', 30)} fps")
+    print(f"Culling threshold: {opacity_threshold}")
     print("="*60)
 
 
@@ -1646,8 +1668,7 @@ def write_sog4d(output_path: str, data: SplatData, cfg: Dict[str, float],
     }
     if visibility_meta is not None:
         meta['visibility'] = visibility_meta
-    if 'culling' in cfg:
-        meta['culling'] = float(cfg['culling'])
+    add_culling_metadata(meta, opacity_threshold)
     
     # Add cubemap info if provided
     cubemap_filename = None
@@ -1730,6 +1751,7 @@ def write_sog4d(output_path: str, data: SplatData, cfg: Dict[str, float],
     print(f"Size: {file_size / 1024 / 1024:.2f} MB")
     print(f"Splats: {data.num}")
     print(f"Duration: {cfg.get('duration', 0):.2f}s @ {cfg.get('fps', 30)} fps")
+    print(f"Culling threshold: {opacity_threshold}")
     print(f"Segments: {len(segments)}")
 
 
@@ -1754,8 +1776,9 @@ def main():
                         help='Random seed for --max_splats sampling')
     parser.add_argument('--segment_duration', type=float, default=0.5,
                         help='Duration of each segment in seconds (default: 0.5)')
-    parser.add_argument('--opacity_threshold', type=float, default=0.005,
-                        help='Opacity threshold to consider a splat active (default: 0.005)')
+    parser.add_argument('--opacity_threshold', type=float, default=None,
+                        help='Override opacity/visibility culling threshold. '
+                             'Default: cfg_args culling if present, otherwise 0.005.')
     parser.add_argument('--no-trbf-kmeans', action='store_true',
                         help='Disable k-means clustering for TRBF (use 16-bit quantization instead)')
     parser.add_argument('--filter_opacity', action='store_true',
@@ -1811,6 +1834,9 @@ def main():
         # Override sh_degree from cfg_args if provided
         if 'sh_degree' in cfg:
             sh_degree = int(cfg.get('sh_degree', 0))
+
+        opacity_threshold = get_culling_threshold(cfg, args.opacity_threshold)
+        print(f"Using culling threshold: {opacity_threshold}")
         
         # Load dynamic PLY
         max_splats = args.max_splats if args.max_splats > 0 else None
@@ -1818,7 +1844,7 @@ def main():
         
         # Filter dynamic splats if requested
         if args.filter_opacity:
-            dynamic_data = filter_low_opacity_splats(dynamic_data, cfg, args.opacity_threshold)
+            dynamic_data = filter_low_opacity_splats(dynamic_data, cfg, opacity_threshold)
         
         # Load static PLYs
         static_data_list = []
@@ -1847,7 +1873,7 @@ def main():
         # Write multi-splat sog4d
         trbf_kmeans = not args.no_trbf_kmeans
         write_sog4d_multi(output_path, dynamic_data, static_data_list, cfg, args.segment_duration,
-                         args.opacity_threshold, trbf_kmeans, cubemap_path)
+                         opacity_threshold, trbf_kmeans, cubemap_path)
     
     # Single file mode
     elif is_dynamic:
@@ -1881,6 +1907,9 @@ def main():
         # Override sh_degree from cfg_args if provided
         if 'sh_degree' in cfg:
             sh_degree = int(cfg.get('sh_degree', 0))
+
+        opacity_threshold = get_culling_threshold(cfg, args.opacity_threshold)
+        print(f"Using culling threshold: {opacity_threshold}")
         
         # Load dynamic PLY
         max_splats = args.max_splats if args.max_splats > 0 else None
@@ -1888,7 +1917,6 @@ def main():
 
         # Filter out low opacity splats (those invisible across all frames)
         if args.filter_opacity:
-            opacity_threshold = args.opacity_threshold
             data = filter_low_opacity_splats(data, cfg, opacity_threshold)
 
         # Ensure output has .sog4d extension
@@ -1905,7 +1933,7 @@ def main():
         
         # Write sog4d
         trbf_kmeans = not args.no_trbf_kmeans
-        write_sog4d(output_path, data, cfg, args.segment_duration, args.opacity_threshold, trbf_kmeans, cubemap_path)
+        write_sog4d(output_path, data, cfg, args.segment_duration, opacity_threshold, trbf_kmeans, cubemap_path)
         
     else:
         print(f"Detected: Static PLY (sh_degree={sh_degree})")

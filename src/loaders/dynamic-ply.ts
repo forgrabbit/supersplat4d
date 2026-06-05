@@ -464,7 +464,7 @@ const loadDynamicPly = async (
                 
                 // Compute segments using the log values (computeSegments does its own exp)
                 const segmentsStartTime = performance.now();
-                computedSegments = computeSegments(trbfCenter, trbfScaleLog, opacity, params);
+                computedSegments = computeSegments(trbfCenter, trbfScaleLog, opacity, params, 0.5, params.culling ?? 0.005);
                 const segmentsTime = performance.now() - segmentsStartTime;
                 console.log(`⏱️  Segments computation: ${segmentsTime.toFixed(2)}ms`);
                 
@@ -562,7 +562,7 @@ const loadDynamicPly = async (
                     }
                     
                     // Compute segments
-                    segments = computeSegments(trbfCenter, trbfScaleLog, opacity, params);
+                    segments = computeSegments(trbfCenter, trbfScaleLog, opacity, params, 0.5, params.culling ?? 0.005);
                     console.log('✅ Segments computed in load event (fallback)');
                 } else {
                     // Use pre-computed segments from load:data

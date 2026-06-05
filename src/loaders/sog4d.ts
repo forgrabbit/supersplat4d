@@ -40,6 +40,7 @@ interface Sog4dMeta {
     duration: number;
     fps: number;
     culling?: number;
+    visibility_cull_threshold?: number;
 
     // Static gaussian attributes
     means: {
@@ -119,6 +120,18 @@ interface Sog4dVisibilityMeta {
 }
 
 type Sog4dFileLoader = (name: string) => Promise<ArrayBuffer>;
+
+const defaultVisibilityCullThreshold = 0.005;
+
+const readVisibilityCullThreshold = (
+    meta?: { culling?: unknown; visibility_cull_threshold?: unknown },
+    fallback?: { culling?: unknown; visibility_cull_threshold?: unknown }
+): number => {
+    const raw = meta?.visibility_cull_threshold ?? meta?.culling ??
+        fallback?.visibility_cull_threshold ?? fallback?.culling;
+    const value = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+    return Number.isFinite(value) && value >= 0 ? value : defaultVisibilityCullThreshold;
+};
 
 // =============================================================================
 // Decode utilities
@@ -817,9 +830,7 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
         (resource as any).dynManifest = dynManifest;
         (resource as any).dynBaseUrl = '';  // Not used for SOG4D
         (resource as any).sog4dSegments = zipEntries;  // Store preloaded segments
-        const cull = (meta as { culling?: number }).culling;
-        (resource as any).visibilityCullThreshold =
-            typeof cull === 'number' && Number.isFinite(cull) ? cull : 0.005;
+        (resource as any).visibilityCullThreshold = readVisibilityCullThreshold(meta);
 
         asset.resource = resource;
 
@@ -935,10 +946,8 @@ const parseSog4dMulti = async (zip: any, mainMeta: any, assetSource: AssetSource
                 };
                 const visibilityProperties = await decodeVisibilityProperties(staticMeta.visibility, loadStaticFile, staticSplatData.numSplats);
                 addVisibilityPropertiesToGsplatData(staticSplatData, visibilityProperties);
-                const cull = (staticMeta as { culling?: number }).culling;
-                if (typeof cull === 'number' && Number.isFinite(cull)) {
-                    (staticResource as any).visibilityCullThreshold = cull;
-                }
+                (staticResource as any).visibilityCullThreshold =
+                    readVisibilityCullThreshold(staticMeta, mainMeta);
             }
             loadedAssets.push(staticAsset);
         }

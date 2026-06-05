@@ -437,8 +437,8 @@ class Splat extends Element {
             } else {
                 material.setDefine('FROZEN_OPACITY', false);
             }
+            material.setParameter('uVisibilityCullThreshold', this.visibilityCullThreshold);
             if (this.hasVisibility) {
-                material.setParameter('uVisibilityCullThreshold', this.visibilityCullThreshold);
                 if (this.visibilityFrozenOpacityTexture) {
                     material.setParameter('splatFrozenOpacity', this.visibilityFrozenOpacityTexture);
                 }
@@ -729,8 +729,7 @@ class Splat extends Element {
     }
 
     private preSortCullThreshold() {
-        const threshold = this.hasVisibility ? this.visibilityCullThreshold : 0.005;
-        return Math.max(0, threshold * PRESORT_CULL_THRESHOLD_SCALE);
+        return Math.max(0, this.visibilityCullThreshold * PRESORT_CULL_THRESHOLD_SCALE);
     }
 
     private getBaseOpacity() {
@@ -936,9 +935,7 @@ class Splat extends Element {
         const doVisibility = this.hasVisibility && !useFrozenOpacity;
         const visibilityData = this.visibilityData;
         const svCache = doVisibility && visibilityData.mode === 'sv' ? this.getVisibilitySvCpuCache() : null;
-        const dynamicOpacityThreshold = useFrozenOpacity ?
-            0.005 * PRESORT_CULL_THRESHOLD_SCALE :
-            Math.max(threshold, 0.005 * PRESORT_CULL_THRESHOLD_SCALE);
+        const dynamicOpacityThreshold = threshold;
 
         let keptCount = 0;
         let deletedRejected = 0;
