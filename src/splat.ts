@@ -51,6 +51,34 @@ const boundingPoints =
         });
     }).flat(3);
 
+const PRESORT_CULL_THRESHOLD_SCALE = 0.98;
+const PRESORT_CAMERA_EPSILON = 1e-5;
+
+type VisibilitySvCpuCache = {
+    siteX: Float32Array[];
+    siteY: Float32Array[];
+    siteZ: Float32Array[];
+    tauSoftplus: Float32Array[];
+};
+
+type PreSortFilterResult = {
+    mapping: Uint32Array | null;
+    sourceCount: number;
+    keptCount: number;
+    deletedRejected: number;
+    opacityRejected: number;
+    visibilityTested: number;
+    visibilityRejected: number;
+};
+
+type PreSortSource = {
+    ready: boolean;
+    frame: number;
+    tAbs: number;
+    segmentIdx: number;
+    indices: Uint32Array | null;
+};
+
 class Splat extends Element {
     asset: Asset;
     splatData: GSplatData;
@@ -134,6 +162,22 @@ class Splat extends Element {
     _dyn_m1: Float32Array | null = null;
     _dyn_m2: Float32Array | null = null;
     _dyn_tc: Float32Array | null = null;
+    _dyn_ts: Float32Array | null = null;
+
+    private _baseOpacity: Float32Array | null = null;
+    private _visibilitySvCpuCache: VisibilitySvCpuCache | null = null;
+    private _preSortScratch: Uint32Array | null = null;
+    private _frozenEffectiveOpacity: Float32Array | null = null;
+    private _visibilityLogitScratch: number[] = [];
+    private _preSortFilterRevision = 0;
+    private _lastPreSortRevision = -1;
+    private _lastPreSortFrame = -1;
+    private _lastPreSortSegment = -2;
+    private _lastPreSortTime = NaN;
+    private _lastPreSortThreshold = NaN;
+    private _lastPreSortFrozen = false;
+    private _lastPreSortRenderCount = -1;
+    private _lastPreSortCamera = new Vec3(NaN, NaN, NaN);
 
     constructor(asset: Asset, orientation: Vec3) {
         super(ElementType.splat);
@@ -200,6 +244,12 @@ class Splat extends Element {
                 }
             }
             return maxDist;
+        };
+
+        const originalSort = instance.sort.bind(instance);
+        instance.sort = (cameraNode: Entity) => {
+            this.applyPreSortFilter(cameraNode);
+            originalSort(cameraNode);
         };
 
         // added per-splat state channel
@@ -392,8 +442,8 @@ class Splat extends Element {
             } else {
                 material.setDefine('FROZEN_OPACITY', false);
             }
+            material.setParameter('uVisibilityCullThreshold', this.visibilityCullThreshold);
             if (this.hasVisibility) {
-                material.setParameter('uVisibilityCullThreshold', this.visibilityCullThreshold);
                 if (this.visibilityFrozenOpacityTexture) {
                     material.setParameter('splatFrozenOpacity', this.visibilityFrozenOpacityTexture);
                 }
@@ -483,6 +533,7 @@ class Splat extends Element {
             this._dyn_m1 = this.splatData.getProp('motion_1') as Float32Array;
             this._dyn_m2 = this.splatData.getProp('motion_2') as Float32Array;
             this._dyn_tc = this.splatData.getProp('trbf_center') as Float32Array;
+            this._dyn_ts = this.splatData.getProp('trbf_scale') as Float32Array;
         }
 
         const initTime = performance.now() - initStartTime;
@@ -511,69 +562,6 @@ class Splat extends Element {
         }
         if (this.visibilityFrozenOpacityTexture) {
             this.visibilityFrozenOpacityTexture.destroy();
-        }
-    }
-
-    /**
-     * Update sorter centers with dynamic positions: p(t) = p0 + motion * (t - trbf_center)
-     * Only updates active splats (performance optimization)
-     * Reference: supersplat_base's _updateCentersActive
-     */
-    private updateCentersForTime(centers: Float32Array, indices: Uint32Array, t_abs: number): void {
-        if (!this._dyn_x0 || !this._dyn_y0 || !this._dyn_z0 ||
-            !this._dyn_m0 || !this._dyn_m1 || !this._dyn_m2 || !this._dyn_tc) {
-            return;
-        }
-
-        const x0 = this._dyn_x0;
-        const y0 = this._dyn_y0;
-        const z0 = this._dyn_z0;
-        const m0 = this._dyn_m0;
-        const m1 = this._dyn_m1;
-        const m2 = this._dyn_m2;
-        const tc = this._dyn_tc;
-
-        // Manually unroll the hot loop for better performance (4x unroll)
-        const n = indices.length;
-        let i = 0;
-        for (; i <= n - 4; i += 4) {
-            let idx = indices[i];
-            let dt = t_abs - tc[idx];
-            let o = idx * 3;
-            centers[o + 0] = x0[idx] + m0[idx] * dt;
-            centers[o + 1] = y0[idx] + m1[idx] * dt;
-            centers[o + 2] = z0[idx] + m2[idx] * dt;
-
-            idx = indices[i + 1];
-            dt = t_abs - tc[idx];
-            o = idx * 3;
-            centers[o + 0] = x0[idx] + m0[idx] * dt;
-            centers[o + 1] = y0[idx] + m1[idx] * dt;
-            centers[o + 2] = z0[idx] + m2[idx] * dt;
-
-            idx = indices[i + 2];
-            dt = t_abs - tc[idx];
-            o = idx * 3;
-            centers[o + 0] = x0[idx] + m0[idx] * dt;
-            centers[o + 1] = y0[idx] + m1[idx] * dt;
-            centers[o + 2] = z0[idx] + m2[idx] * dt;
-
-            idx = indices[i + 3];
-            dt = t_abs - tc[idx];
-            o = idx * 3;
-            centers[o + 0] = x0[idx] + m0[idx] * dt;
-            centers[o + 1] = y0[idx] + m1[idx] * dt;
-            centers[o + 2] = z0[idx] + m2[idx] * dt;
-        }
-
-        // Handle remaining splats
-        for (; i < n; i++) {
-            const idx = indices[i];
-            const dt = t_abs - tc[idx];
-            const o = idx * 3;
-            centers[o + 0] = x0[idx] + m0[idx] * dt;
-            centers[o + 1] = y0[idx] + m1[idx] * dt;
-            centers[o + 2] = z0[idx] + m2[idx] * dt;
         }
     }
 
@@ -840,6 +828,434 @@ class Splat extends Element {
         return 0;
     }
 
+    private markPreSortFilterDirty() {
+        this._preSortFilterRevision++;
+    }
+
+    private needsPreSortOpacityFilter() {
+        return this.isDynamic || this.hasVisibility;
+    }
+
+    private preSortCullThreshold() {
+        return Math.max(0, this.visibilityCullThreshold * PRESORT_CULL_THRESHOLD_SCALE);
+    }
+
+    private getBaseOpacity() {
+        const opacity = this.splatData.getProp('opacity') as Float32Array | null;
+        if (!opacity) {
+            return null;
+        }
+
+        if (this._baseOpacity && this._baseOpacity.length === opacity.length) {
+            return this._baseOpacity;
+        }
+
+        const baseOpacity = new Float32Array(opacity.length);
+        for (let i = 0; i < opacity.length; i++) {
+            baseOpacity[i] = this.sigmoid(opacity[i]);
+        }
+        this._baseOpacity = baseOpacity;
+        return baseOpacity;
+    }
+
+    private getVisibilitySvCpuCache() {
+        const visibilityData = this.visibilityData;
+        if (visibilityData.mode !== 'sv') {
+            return null;
+        }
+
+        if (this._visibilitySvCpuCache) {
+            return this._visibilitySvCpuCache;
+        }
+
+        const cache: VisibilitySvCpuCache = {
+            siteX: [],
+            siteY: [],
+            siteZ: [],
+            tauSoftplus: []
+        };
+        const numSplats = this.splatData.numSplats;
+
+        for (let lobeIndex = 0; lobeIndex < visibilityData.numLobes; lobeIndex++) {
+            const lobe = visibilityData.lobes[lobeIndex];
+            const siteX = new Float32Array(numSplats);
+            const siteY = new Float32Array(numSplats);
+            const siteZ = new Float32Array(numSplats);
+            const tauSoftplus = new Float32Array(numSplats);
+
+            for (let i = 0; i < numSplats; i++) {
+                const sx = lobe.siteX[i];
+                const sy = lobe.siteY[i];
+                const sz = lobe.siteZ[i];
+                const invLen = 1 / Math.max(1e-6, Math.sqrt(sx * sx + sy * sy + sz * sz));
+                siteX[i] = sx * invLen;
+                siteY[i] = sy * invLen;
+                siteZ[i] = sz * invLen;
+                tauSoftplus[i] = this.softplus(lobe.tau[i]);
+            }
+
+            cache.siteX.push(siteX);
+            cache.siteY.push(siteY);
+            cache.siteZ.push(siteZ);
+            cache.tauSoftplus.push(tauSoftplus);
+        }
+
+        this._visibilitySvCpuCache = cache;
+        return cache;
+    }
+
+    private evalVisibilitySVDeg3Cached(dx: number, dy: number, dz: number, cache: VisibilitySvCpuCache, i: number) {
+        const dirLen = Math.max(1e-6, Math.sqrt(dx * dx + dy * dy + dz * dz));
+        const vx = dx / dirLen;
+        const vy = dy / dirLen;
+        const vz = dz / dirLen;
+        const logits = this._visibilityLogitScratch;
+
+        let maxLogit = -Infinity;
+        for (let lobeIndex = 0; lobeIndex < cache.siteX.length; lobeIndex++) {
+            const sx = cache.siteX[lobeIndex][i];
+            const sy = cache.siteY[lobeIndex][i];
+            const sz = cache.siteZ[lobeIndex][i];
+            const dist = Math.sqrt((sx - vx) * (sx - vx) + (sy - vy) * (sy - vy) + (sz - vz) * (sz - vz));
+            const logit = -cache.tauSoftplus[lobeIndex][i] * dist;
+            logits[lobeIndex] = logit;
+            maxLogit = Math.max(maxLogit, logit);
+        }
+
+        const visibilityData = this.visibilityData as VisibilitySvData;
+        let weightedValue = 0;
+        let totalWeight = 0;
+        for (let lobeIndex = 0; lobeIndex < cache.siteX.length; lobeIndex++) {
+            const weight = Math.exp(logits[lobeIndex] - maxLogit);
+            weightedValue += weight * visibilityData.lobes[lobeIndex].value[i];
+            totalWeight += weight;
+        }
+
+        return weightedValue / Math.max(totalWeight, 1e-6);
+    }
+
+    private getCameraPositionInSplatSpace(cameraNode: Entity | null, result: Vec3) {
+        if (cameraNode) {
+            cameraNode.getWorldTransform().getTranslation(result);
+        } else {
+            result.copy(this.scene.camera.entity.getPosition());
+        }
+
+        mat.copy(this.entity.getWorldTransform()).invert();
+        mat.transformPoint(result, result);
+        return result;
+    }
+
+    private currentPreSortSource(): PreSortSource {
+        if (!this.isDynamic || !this.dynManifest) {
+            return {
+                ready: true,
+                frame: -1,
+                tAbs: 0,
+                segmentIdx: -1,
+                indices: null
+            };
+        }
+
+        const currentFrame = (this.scene.events.invoke('timeline.frame') ?? 0) as number;
+        const totalFrames = Math.max(1, Math.ceil(this.dynManifest.duration * this.dynManifest.fps));
+        const frame = currentFrame % totalFrames;
+        const tAbs = this.dynManifest.start + (frame / this.dynManifest.fps);
+        const segmentIdx = this.findSegment(tAbs);
+
+        let indices: Uint32Array | null = null;
+        if (this.currentSegmentIndex === segmentIdx && this.activeIndices) {
+            indices = this.activeIndices;
+        } else if (this.segmentCache.has(segmentIdx)) {
+            indices = this.segmentCache.get(segmentIdx)!;
+            this.activeIndices = indices;
+            this.currentSegmentIndex = segmentIdx;
+        } else {
+            if (!this.loadingSegments.has(segmentIdx)) {
+                this.loadSegment(segmentIdx).then((loadedIndices) => {
+                    if (!loadedIndices) {
+                        return;
+                    }
+
+                    this.activeIndices = loadedIndices;
+                    this.currentSegmentIndex = segmentIdx;
+                    this.markPreSortFilterDirty();
+                    this.scene.forceRender = true;
+                    this.scene.app.renderNextFrame = true;
+                });
+            }
+
+            return {
+                ready: false,
+                frame,
+                tAbs,
+                segmentIdx,
+                indices: null
+            };
+        }
+
+        this.currentTime = tAbs;
+
+        return {
+            ready: true,
+            frame,
+            tAbs,
+            segmentIdx,
+            indices
+        };
+    }
+
+    private buildPreSortMapping(
+        sourceIndices: Uint32Array | null,
+        tAbs: number,
+        cameraPosition: Vec3,
+        threshold: number,
+        frozen: boolean,
+        centers: Float32Array
+    ): PreSortFilterResult {
+        const state = this.splatData.getProp('state') as Uint8Array | null;
+        const baseOpacity = this.getBaseOpacity();
+        const totalSplats = this.splatData.numSplats;
+        const sourceCount = sourceIndices ? sourceIndices.length : totalSplats;
+        const scratch = this._preSortScratch && this._preSortScratch.length >= sourceCount ?
+            this._preSortScratch :
+            new Uint32Array(sourceCount);
+
+        this._preSortScratch = scratch;
+
+        const useDynamic =
+            this.isDynamic &&
+            !!this._dyn_x0 && !!this._dyn_y0 && !!this._dyn_z0 &&
+            !!this._dyn_m0 && !!this._dyn_m1 && !!this._dyn_m2 &&
+            !!this._dyn_tc && !!this._dyn_ts &&
+            Number.isFinite(tAbs);
+
+        const x0 = this._dyn_x0 as Float32Array;
+        const y0 = this._dyn_y0 as Float32Array;
+        const z0 = this._dyn_z0 as Float32Array;
+        const m0 = this._dyn_m0 as Float32Array;
+        const m1 = this._dyn_m1 as Float32Array;
+        const m2 = this._dyn_m2 as Float32Array;
+        const tc = this._dyn_tc as Float32Array;
+        const ts = this._dyn_ts as Float32Array;
+        const frozenOpacity = frozen ? this._frozenEffectiveOpacity : null;
+        const useFrozenOpacity = !!frozenOpacity;
+        const doVisibility = this.hasVisibility && !useFrozenOpacity;
+        const visibilityData = this.visibilityData;
+        const svCache = doVisibility && visibilityData.mode === 'sv' ? this.getVisibilitySvCpuCache() : null;
+        const dynamicOpacityThreshold = threshold;
+
+        let keptCount = 0;
+        let deletedRejected = 0;
+        let opacityRejected = 0;
+        let visibilityTested = 0;
+        let visibilityRejected = 0;
+
+        for (let source = 0; source < sourceCount; source++) {
+            const index = sourceIndices ? sourceIndices[source] : source;
+
+            if (state && (state[index] & State.deleted) !== 0) {
+                deletedRejected++;
+                continue;
+            }
+
+            let opacity = baseOpacity ? baseOpacity[index] : 1;
+            let cx = 0;
+            let cy = 0;
+            let cz = 0;
+            let centerReady = false;
+
+            if (useDynamic) {
+                const dt = tAbs - tc[index];
+                const dtScaled = dt / Math.max(ts[index], 1e-6);
+                opacity *= Math.exp(-(dtScaled * dtScaled));
+
+                if (opacity < dynamicOpacityThreshold) {
+                    opacityRejected++;
+                    continue;
+                }
+
+                cx = x0[index] + m0[index] * dt;
+                cy = y0[index] + m1[index] * dt;
+                cz = z0[index] + m2[index] * dt;
+                const centerOffset = index * 3;
+                centers[centerOffset + 0] = cx;
+                centers[centerOffset + 1] = cy;
+                centers[centerOffset + 2] = cz;
+                centerReady = true;
+            } else if (!useFrozenOpacity && opacity < threshold) {
+                opacityRejected++;
+                continue;
+            }
+
+            if (useFrozenOpacity) {
+                opacity = frozenOpacity![index];
+                if (opacity < threshold) {
+                    opacityRejected++;
+                    continue;
+                }
+            }
+
+            if (doVisibility) {
+                if (!centerReady) {
+                    const centerOffset = index * 3;
+                    cx = centers[centerOffset + 0];
+                    cy = centers[centerOffset + 1];
+                    cz = centers[centerOffset + 2];
+                }
+
+                const dx = cx - cameraPosition.x;
+                const dy = cy - cameraPosition.y;
+                const dz = cz - cameraPosition.z;
+                const invLen = 1 / Math.max(1e-6, Math.sqrt(dx * dx + dy * dy + dz * dz));
+                const vx = dx * invLen;
+                const vy = dy * invLen;
+                const vz = dz * invLen;
+
+                let visRaw = 0;
+                if (visibilityData.mode === 'sv' && svCache) {
+                    visRaw = this.evalVisibilitySVDeg3Cached(vx, vy, vz, svCache, index);
+                } else if (visibilityData.mode === 'sh') {
+                    visRaw = this.evalVisibilitySHDeg3(vx, vy, vz, visibilityData.coeffs, index);
+                }
+
+                visibilityTested++;
+                opacity *= this.sigmoid(visRaw);
+                if (opacity < threshold) {
+                    visibilityRejected++;
+                    continue;
+                }
+            }
+
+            scratch[keptCount++] = index;
+        }
+
+        const allSourceSplats = !sourceIndices && keptCount === sourceCount && deletedRejected === 0;
+        const mapping = allSourceSplats ? null : scratch.slice(0, keptCount);
+
+        return {
+            mapping,
+            sourceCount,
+            keptCount,
+            deletedRejected,
+            opacityRejected,
+            visibilityTested,
+            visibilityRejected
+        };
+    }
+
+    private applyPreSortFilter(cameraNode: Entity | null = null, force = false) {
+        if (!this.needsPreSortOpacityFilter()) {
+            return false;
+        }
+
+        const source = this.currentPreSortSource();
+        if (!source.ready) {
+            return false;
+        }
+
+        const sorter = this.entity.gsplat.instance.sorter;
+        if (!sorter) {
+            return false;
+        }
+
+        const frozen = this.hasVisibility && !!this.scene.events.invoke('visibility.freezeEffectiveOpacity');
+        if (frozen && !this._frozenEffectiveOpacity) {
+            this.freezeEffectiveOpacity();
+        }
+
+        const threshold = this.preSortCullThreshold();
+        this.getCameraPositionInSplatSpace(cameraNode, vecc);
+
+        const cameraSensitive = this.hasVisibility && !frozen;
+        const cameraChanged = cameraSensitive && (
+            Math.abs(vecc.x - this._lastPreSortCamera.x) > PRESORT_CAMERA_EPSILON ||
+            Math.abs(vecc.y - this._lastPreSortCamera.y) > PRESORT_CAMERA_EPSILON ||
+            Math.abs(vecc.z - this._lastPreSortCamera.z) > PRESORT_CAMERA_EPSILON
+        );
+
+        const needsUpdate =
+            force ||
+            this._lastPreSortRevision !== this._preSortFilterRevision ||
+            this._lastPreSortFrame !== source.frame ||
+            this._lastPreSortSegment !== source.segmentIdx ||
+            this._lastPreSortTime !== source.tAbs ||
+            this._lastPreSortThreshold !== threshold ||
+            this._lastPreSortFrozen !== frozen ||
+            cameraChanged;
+
+        if (!needsUpdate) {
+            return false;
+        }
+
+        const start = profiler.now();
+        const result = this.buildPreSortMapping(source.indices, source.tAbs, vecc, threshold, frozen, sorter.centers);
+        const buildMs = profiler.now() - start;
+
+        this._lastPreSortRevision = this._preSortFilterRevision;
+        this._lastPreSortFrame = source.frame;
+        this._lastPreSortSegment = source.segmentIdx;
+        this._lastPreSortTime = source.tAbs;
+        this._lastPreSortThreshold = threshold;
+        this._lastPreSortFrozen = frozen;
+        this._lastPreSortRenderCount = result.keptCount;
+        this._lastPreSortCamera.copy(vecc);
+        this.lastActiveSplats = result.sourceCount;
+        this.lastDrawSplats = result.keptCount;
+
+        const profileData = {
+            splat: this,
+            frame: source.frame,
+            segment: source.segmentIdx,
+            sourceCount: result.sourceCount,
+            keptCount: result.keptCount,
+            deletedRejected: result.deletedRejected,
+            opacityRejected: result.opacityRejected,
+            visibilityTested: result.visibilityTested,
+            visibilityRejected: result.visibilityRejected,
+            threshold,
+            frozen,
+            buildMs
+        };
+
+        profiler.addFrameValue('prefilterMs', buildMs);
+        profiler.maxFrameValue('prefilterSourceSplats', result.sourceCount);
+        profiler.maxFrameValue('prefilterKeptSplats', result.keptCount);
+        profiler.addFrameValue('prefilterOpacityRejected', result.opacityRejected);
+        profiler.addFrameValue('prefilterVisibilityRejected', result.visibilityRejected);
+        profiler.setFrameValues({
+            segmentIndex: source.segmentIdx,
+            currentTime: source.tAbs,
+            activeSplats: result.sourceCount,
+            drawSplats: result.keptCount
+        });
+        profiler.event('splat.prefilter', {
+            splat: this.name,
+            frame: source.frame,
+            segment: source.segmentIdx,
+            sourceCount: result.sourceCount,
+            keptCount: result.keptCount,
+            deletedRejected: result.deletedRejected,
+            opacityRejected: result.opacityRejected,
+            visibilityTested: result.visibilityTested,
+            visibilityRejected: result.visibilityRejected,
+            threshold,
+            frozen,
+            buildMs
+        });
+
+        this.scene.events.fire('splat.prefilterProfile', profileData);
+
+        const setMappingStart = profiler.now();
+        sorter.setMapping(result.mapping);
+        profiler.addFrameValue('setMappingCallMs', profiler.now() - setMappingStart);
+        return true;
+    }
+
+    get renderSplats() {
+        return this._lastPreSortRenderCount >= 0 ? this._lastPreSortRenderCount : this.numSplats;
+    }
+
 
     updateState(changedState = State.selected) {
         const state = this.splatData.getProp('state') as Uint8Array;
@@ -873,7 +1289,12 @@ class Splat extends Element {
 
         // handle splats being added or removed
         if (changedState & State.deleted) {
-            this.updateSorting();
+            this.markPreSortFilterDirty();
+            if (!this.needsPreSortOpacityFilter()) {
+                this.updateSorting();
+            } else {
+                this.applyPreSortFilter(null, true);
+            }
         }
 
         this.scene.forceRender = true;
@@ -895,13 +1316,25 @@ class Splat extends Element {
             }
         }
 
-        this.updateSorting();
+        this.markPreSortFilterDirty();
+        if (this.needsPreSortOpacityFilter()) {
+            this.applyPreSortFilter(null, true);
+        } else {
+            this.updateSorting();
+        }
 
         this.scene.forceRender = true;
         this.scene.events.fire('splat.positionsChanged', this);
     }
 
     updateSorting() {
+        if (this.needsPreSortOpacityFilter()) {
+            this.markPreSortFilterDirty();
+            if (this.applyPreSortFilter(null, true) || this.isDynamic) {
+                return;
+            }
+        }
+
         const state = this.splatData.getProp('state') as Uint8Array;
 
         this.makeLocalBoundDirty();
@@ -984,6 +1417,8 @@ class Splat extends Element {
                     this.freezeEffectiveOpacity();
                 }
 
+                this.markPreSortFilterDirty();
+                this.applyPreSortFilter(null, true);
                 this.scene.forceRender = true;
                 this.scene.app.renderNextFrame = true;
             };
@@ -1018,6 +1453,9 @@ class Splat extends Element {
             // Load initial segment and update mapping
             // Use an empty mapping initially to hide all splats until segment loads
             const emptyMappingStart = profiler.now();
+            this._lastPreSortRenderCount = 0;
+            this.lastActiveSplats = 0;
+            this.lastDrawSplats = 0;
             this.entity.gsplat.instance.sorter.setMapping(new Uint32Array(0));
             profiler.addFrameValue('setMappingCallMs', profiler.now() - emptyMappingStart);
 
@@ -1027,39 +1465,21 @@ class Splat extends Element {
                     return;
                 }
 
-                if (indices && indices.length > 0) {
+                if (indices) {
                     // Cache active indices
-                    this.activeIndices = this.segmentCache.get(initialSegmentIndex) ?? indices;
+                    this.activeIndices = indices;
                     this.lastActiveSplats = indices.length;
                     profiler.setFrameValues({
                         activeSplats: indices.length,
                         segmentIndex: initialSegmentIndex
                     });
 
-                    // Update centers for initial frame
-                    const sorter = this.entity.gsplat.instance.sorter;
-                    const updateCentersStart = profiler.now();
-                    this.updateCentersForTime(sorter.centers, indices, this.dynManifest!.start);
-                    const updateCentersMs = profiler.now() - updateCentersStart;
-                    profiler.addFrameValue('updateCentersMs', updateCentersMs);
-                    profiler.event('splat.updateCenters', {
-                        splat: this.name,
-                        segmentIndex: initialSegmentIndex,
-                        activeSplats: indices.length,
-                        time: this.dynManifest!.start,
-                        ms: updateCentersMs,
-                        initial: true
-                    });
-
                     // Mark as pending sort so that uCurrentTime is set when sorting completes
                     this.pendingSort = true;
                     this.lastSortedFrame = 0;
-                    this.lastSortedTime = this.dynManifest!.start;
+                    this.lastSortedTime = initialFrameTime;
 
-                    // Set mapping to trigger sort
-                    const setMappingStart = profiler.now();
-                    sorter.setMapping(indices);
-                    profiler.addFrameValue('setMappingCallMs', profiler.now() - setMappingStart);
+                    this.applyPreSortFilter(null, true);
 
                     this.preloadNextSegment(initialSegmentIndex);
                 }
@@ -1174,6 +1594,7 @@ class Splat extends Element {
         const y = this.splatData.getProp('y') as Float32Array;
         const z = this.splatData.getProp('z') as Float32Array;
         const opacity = this.splatData.getProp('opacity') as Float32Array;
+        const baseOpacity = this.getBaseOpacity();
 
         const motion0 = this.splatData.getProp('motion_0') as Float32Array | null;
         const motion1 = this.splatData.getProp('motion_1') as Float32Array | null;
@@ -1211,19 +1632,21 @@ class Splat extends Element {
             }
         }
 
-        const numSplats = this.numSplats;
+        const numSplats = this.splatData.numSplats;
 
         const locked = frozenTex.lock() as unknown as Float32Array | ArrayBufferView;
         const data = locked instanceof Float32Array ? locked : new Float32Array((locked as any).buffer);
+        const frozenOpacity = new Float32Array(numSplats);
 
         data.fill(0);
+        const svCache = visibilityData.mode === 'sv' ? this.getVisibilitySvCpuCache() : null;
 
         for (let i = 0; i < numSplats; i++) {
             let cx = x[i];
             let cy = y[i];
             let cz = z[i];
 
-            let opBefore = this.sigmoid(opacity[i]);
+            let opBefore = baseOpacity ? baseOpacity[i] : this.sigmoid(opacity[i]);
 
             if (useDynamic) {
                 const dt = t_abs - (trbfCenter as Float32Array)[i];
@@ -1249,8 +1672,8 @@ class Splat extends Element {
             const vz = dz * invLen;
 
             let visRaw = 0;
-            if (visibilityData.mode === 'sv') {
-                visRaw = this.evalVisibilitySVDeg3(vx, vy, vz, visibilityData, i);
+            if (visibilityData.mode === 'sv' && svCache) {
+                visRaw = this.evalVisibilitySVDeg3Cached(vx, vy, vz, svCache, i);
             } else if (visibilityData.mode === 'sh') {
                 visRaw = this.evalVisibilitySHDeg3(vx, vy, vz, visibilityData.coeffs, i);
             }
@@ -1258,9 +1681,12 @@ class Splat extends Element {
             const opEff = visibility * opBefore;
 
             data[i] = opEff;
+            frozenOpacity[i] = opEff;
         }
 
         frozenTex.unlock();
+        this._frozenEffectiveOpacity = frozenOpacity;
+        this.markPreSortFilterDirty();
     }
 
     remove() {
@@ -1323,41 +1749,23 @@ class Splat extends Element {
 
             // 5. 检查 segment 是否在缓存中
             if (this.segmentCache.has(segmentIdx)) {
-                const cachedIndices = this.segmentCache.get(segmentIdx)!;
-                const indices = new Uint32Array(cachedIndices);
-                const activeSplats = cachedIndices.length;
-                this.activeIndices = cachedIndices;
-                this.lastActiveSplats = activeSplats;
+                // 6. 更新 centers: p(t) = p0 + motion * (t - trbf_center)
+                const indices = this.segmentCache.get(segmentIdx)!;
+                this.activeIndices = indices;
+                this.lastActiveSplats = indices.length;
                 this.currentSegmentIndex = segmentIdx;
-                profiler.addFrameValue('activeSplatsUpdated', activeSplats);
+                profiler.addFrameValue('activeSplatsUpdated', indices.length);
                 profiler.setFrameValues({
                     segmentIndex: segmentIdx,
-                    currentTime: t_abs
-                });
-
-                // 6. 更新 centers: p(t) = p0 + motion * (t - trbf_center)
-                const sorter = this.entity.gsplat.instance.sorter;
-                const updateCentersStart = profiler.now();
-                this.updateCentersForTime(sorter.centers, indices, t_abs);
-                const updateCentersMs = profiler.now() - updateCentersStart;
-                profiler.addFrameValue('updateCentersMs', updateCentersMs);
-                profiler.event('splat.updateCenters', {
-                    splat: this.name,
-                    segmentIndex: segmentIdx,
-                    activeSplats,
-                    frame,
-                    time: t_abs,
-                    ms: updateCentersMs
+                    currentTime: t_abs,
+                    activeSplats: indices.length
                 });
 
                 // 7. 触发排序 (shader uniform uCurrentTime will be set when sorting completes)
                 this.pendingSort = true;
                 this.lastSortedFrame = frame;
                 this.lastSortedTime = t_abs;
-
-                const setMappingStart = profiler.now();
-                sorter.setMapping(indices);
-                profiler.addFrameValue('setMappingCallMs', profiler.now() - setMappingStart);
+                this.applyPreSortFilter(null, true);
 
                 // 预加载下一个 segment
                 this.preloadNextSegment(segmentIdx);
@@ -1468,6 +1876,8 @@ class Splat extends Element {
         }
 
         this.makeWorldBoundDirty();
+        this.markPreSortFilterDirty();
+        this.applyPreSortFilter(null, true);
 
         this.scene.events.fire('splat.moved', this);
     }

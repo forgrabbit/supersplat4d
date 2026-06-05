@@ -20,6 +20,7 @@ varying mediump vec4 color;
 mediump vec4 discardVec = vec4(0.0, 0.0, 2.0, 1.0);
 
 uniform float saturation;
+uniform float uVisibilityCullThreshold; // effective alpha cull threshold from cfg_args culling
 
 vec3 applySaturation(vec3 color) {
     vec3 grey = vec3(dot(color, vec3(0.299, 0.587, 0.114)));
@@ -28,7 +29,6 @@ vec3 applySaturation(vec3 color) {
 
 #ifdef HAS_VISIBILITY
 uniform vec3 uCameraPosition; // Camera position in the same space as modelCenter
-uniform float uVisibilityCullThreshold; // discard if effective alpha below this (PLY cfg_args culling)
 uniform sampler2D splatFrozenOpacity;
 
     #ifdef HAS_VISIBILITY_SH
@@ -290,7 +290,7 @@ void main(void) {
             color.a *= gaussian;
             
             // Discard splats with low opacity (improves performance and visual quality)
-            if (color.a < 0.005) {
+            if (color.a < uVisibilityCullThreshold) {
                 gl_Position = discardVec;
                 return;
             }

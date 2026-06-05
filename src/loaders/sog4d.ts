@@ -48,6 +48,8 @@ interface Sog4dMeta {
     start: number;
     duration: number;
     fps: number;
+    culling?: number;
+    visibility_cull_threshold?: number;
 
     // Static gaussian attributes
     means: {
@@ -94,12 +96,51 @@ interface Sog4dMeta {
         count: number;
     }>;
 
+    visibility?: Sog4dVisibilityMeta;
+
     // Optional cubemap background
     cubemap?: {
         file: string;
         format: string;  // e.g., 'horizontal_cross'
     };
 }
+
+interface Sog4dVisibilityMeta {
+    // New visibility format written by ply_to_sog4d_svsv.py.
+    encoding: 'quantize16';
+    representation?: 'sv' | 'sh';
+    groups?: Array<{
+        names: string[];
+        mins: number[];
+        maxs: number[];
+        files: string[];
+    }>;
+    lobes?: number;
+    metric?: string;
+    count?: number;
+
+    // Legacy SH-only format written by earlier local ply_to_sog4d.py changes.
+    mode?: 'sh';
+    degree?: number;
+    coeff_count?: number;
+    mins?: number[];
+    maxs?: number[];
+    files?: string[];
+}
+
+type Sog4dFileLoader = (name: string) => Promise<ArrayBuffer>;
+
+const defaultVisibilityCullThreshold = 0.005;
+
+const readVisibilityCullThreshold = (
+    meta?: { culling?: unknown; visibility_cull_threshold?: unknown },
+    fallback?: { culling?: unknown; visibility_cull_threshold?: unknown }
+): number => {
+    const raw = meta?.visibility_cull_threshold ?? meta?.culling ??
+        fallback?.visibility_cull_threshold ?? fallback?.culling;
+    const value = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+    return Number.isFinite(value) && value >= 0 ? value : defaultVisibilityCullThreshold;
+};
 
 // =============================================================================
 // Decode utilities
@@ -165,6 +206,189 @@ const dequantize16bit = (lo: number, hi: number, min: number, max: number): numb
     const val16 = lo | (hi << 8);
     const scale = (max - min) || 1;
     return min + (val16 / 65535) * scale;
+};
+
+const isVisibilityPropertyName = (name: string): boolean => {
+    return /^v_sh_\d+$/.test(name) ||
+        /^v_site_\d+_[xyz]$/.test(name) ||
+        /^v_val_\d+$/.test(name) ||
+        /^v_tau_\d+$/.test(name);
+};
+
+const decodeGroupedVisibilityProperties = async (
+    visibility: Sog4dVisibilityMeta,
+    loadFile: Sog4dFileLoader,
+    count: number
+): Promise<any[]> => {
+    if (visibility.encoding !== 'quantize16') {
+        throw new Error(`Unsupported SOG4D visibility encoding: ${visibility.encoding}`);
+    }
+    if (!visibility.groups || visibility.groups.length === 0) {
+        return [];
+    }
+
+    const representation = visibility.representation ?? 'sh';
+    if (representation !== 'sv' && representation !== 'sh') {
+        throw new Error(`Unsupported SOG4D visibility representation: ${representation}`);
+    }
+
+    console.log(`  Decoding visibility ${representation.toUpperCase()} parameters...`);
+    const visibilityStartTime = performance.now();
+    const properties: any[] = [];
+    const seen = new Set<string>();
+
+    for (const group of visibility.groups) {
+        if (group.files.length !== 2) {
+            throw new Error(`SOG4D visibility group expected 2 WebP files, got ${group.files.length}`);
+        }
+        if (group.names.length === 0 || group.names.length > 3) {
+            throw new Error(`SOG4D visibility group expected 1-3 field names, got ${group.names.length}`);
+        }
+        if (group.mins.length !== group.names.length || group.maxs.length !== group.names.length) {
+            throw new Error('SOG4D visibility group min/max arrays must match field names');
+        }
+
+        for (const name of group.names) {
+            if (!isVisibilityPropertyName(name)) {
+                throw new Error(`Unsupported SOG4D visibility property name: ${name}`);
+            }
+            if (seen.has(name)) {
+                throw new Error(`Duplicate SOG4D visibility property: ${name}`);
+            }
+            seen.add(name);
+        }
+
+        const [loData, hiData] = await Promise.all(group.files.map((file) => loadFile(file).then(decodeWebP)));
+
+        for (let channel = 0; channel < group.names.length; channel++) {
+            const name = group.names[channel];
+            const storage = new Float32Array(count);
+            for (let i = 0; i < count; i++) {
+                const o = i * 4;
+                storage[i] = dequantize16bit(
+                    loData.rgba[o + channel],
+                    hiData.rgba[o + channel],
+                    group.mins[channel],
+                    group.maxs[channel]
+                );
+            }
+            properties.push({
+                type: 'float',
+                name,
+                storage,
+                byteSize: 4
+            });
+        }
+    }
+
+    if (representation === 'sv' && typeof visibility.lobes === 'number') {
+        const expected = visibility.lobes * 5;
+        if (properties.length !== expected) {
+            throw new Error(`SOG4D SV visibility expected ${expected} fields for ${visibility.lobes} lobes, got ${properties.length}`);
+        }
+    }
+
+    const visibilityTime = performance.now() - visibilityStartTime;
+    console.log(`⏱️  Visibility ${representation.toUpperCase()} decoding: ${visibilityTime.toFixed(2)}ms`);
+
+    return properties;
+};
+
+const decodeLegacyShVisibilityProperties = async (
+    visibility: Sog4dVisibilityMeta | undefined,
+    loadFile: Sog4dFileLoader,
+    count: number
+): Promise<any[]> => {
+    if (!visibility) {
+        return [];
+    }
+
+    if (visibility.mode !== 'sh') {
+        throw new Error(`Unsupported SOG4D visibility mode: ${visibility.mode}`);
+    }
+    if (visibility.encoding !== 'quantize16') {
+        throw new Error(`Unsupported SOG4D visibility encoding: ${visibility.encoding}`);
+    }
+    if (visibility.degree !== 3 || visibility.coeff_count !== 16) {
+        throw new Error(`Unsupported SOG4D visibility SH layout: degree=${visibility.degree}, coeff_count=${visibility.coeff_count}`);
+    }
+    if (!visibility.files || !visibility.mins || !visibility.maxs) {
+        throw new Error('Legacy SOG4D visibility SH metadata is incomplete');
+    }
+    const groupSize = 3;
+    const numGroups = Math.ceil(visibility.coeff_count / groupSize);
+    const expectedFileCount = numGroups * 2;
+    if (visibility.files.length !== expectedFileCount) {
+        throw new Error(`SOG4D visibility expected ${expectedFileCount} WebP files, got ${visibility.files.length}`);
+    }
+    if (visibility.mins.length !== 16 || visibility.maxs.length !== 16) {
+        throw new Error('SOG4D visibility min/max arrays must contain 16 values');
+    }
+
+    console.log('  Decoding visibility SH coefficients...');
+    const visibilityStartTime = performance.now();
+    const decoded = await Promise.all(visibility.files.map((file) => loadFile(file).then(decodeWebP)));
+    const coeffs = Array.from({ length: 16 }, () => new Float32Array(count));
+
+    for (let groupIdx = 0; groupIdx < numGroups; groupIdx++) {
+        const lo = decoded[groupIdx * 2].rgba;
+        const hi = decoded[groupIdx * 2 + 1].rgba;
+
+        for (let i = 0; i < count; i++) {
+            const o = i * 4;
+            for (let channel = 0; channel < groupSize; channel++) {
+                const coeffIdx = groupIdx * groupSize + channel;
+                if (coeffIdx >= visibility.coeff_count) {
+                    break;
+                }
+                coeffs[coeffIdx][i] = dequantize16bit(
+                    lo[o + channel],
+                    hi[o + channel],
+                    visibility.mins[coeffIdx],
+                    visibility.maxs[coeffIdx]
+                );
+            }
+        }
+    }
+
+    const visibilityTime = performance.now() - visibilityStartTime;
+    console.log(`⏱️  Visibility SH decoding: ${visibilityTime.toFixed(2)}ms`);
+
+    return coeffs.map((storage, idx) => ({
+        type: 'float',
+        name: `v_sh_${idx}`,
+        storage,
+        byteSize: 4
+    }));
+};
+
+const decodeVisibilityProperties = async (
+    visibility: Sog4dVisibilityMeta | undefined,
+    loadFile: Sog4dFileLoader,
+    count: number
+): Promise<any[]> => {
+    if (!visibility) {
+        return [];
+    }
+
+    if (visibility.groups) {
+        return decodeGroupedVisibilityProperties(visibility, loadFile, count);
+    }
+
+    return decodeLegacyShVisibilityProperties(visibility, loadFile, count);
+};
+
+const addVisibilityPropertiesToGsplatData = (gsplatData: GSplatData, properties: any[]) => {
+    if (properties.length === 0) {
+        return;
+    }
+
+    const vertexElement = gsplatData.getElement('vertex');
+    for (const property of properties) {
+        if (!gsplatData.getProp(property.name)) {
+            vertexElement.properties.push(property);
+        }
+    }
 };
 
 /**
@@ -499,6 +723,8 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatDa
     });
     console.log(`⏱️  TRBF decoding: ${trbfDecodeTime.toFixed(2)}ms`);
 
+    const visibilityProperties = await decodeVisibilityProperties(meta.visibility, loadFile, count);
+
     // Build GSplatData
     const properties: any[] = [
         { type: 'float', name: 'x', storage: x, byteSize: 4 },
@@ -521,6 +747,7 @@ const parseSog4d = async (zipData: ArrayBuffer): Promise<{ gsplatData?: GSplatDa
         { type: 'float', name: 'trbf_center', storage: trbf_center, byteSize: 4 },
         { type: 'float', name: 'trbf_scale', storage: trbf_scale, byteSize: 4 }
     ];
+    properties.push(...visibilityProperties);
 
     const gsplatData = new GSplatData([{
         name: 'vertex',
@@ -698,9 +925,7 @@ const loadSog4d = async (assets: AssetRegistry, assetSource: AssetSource, device
         (resource as any).dynManifest = dynManifest;
         (resource as any).dynBaseUrl = '';  // Not used for SOG4D
         (resource as any).sog4dSegments = zipEntries;  // Store preloaded segments
-        const cull = (meta as { culling?: number }).culling;
-        (resource as any).visibilityCullThreshold =
-            typeof cull === 'number' && Number.isFinite(cull) ? cull : 0.005;
+        (resource as any).visibilityCullThreshold = readVisibilityCullThreshold(meta);
 
         asset.resource = resource;
 
@@ -820,6 +1045,23 @@ const parseSog4dMulti = async (zip: any, mainMeta: any, assetSource: AssetSource
             const { loadGsplat } = await import('./gsplat');
             const staticLoadStart = profiler.now();
             const staticAsset = await loadGsplat(assets, virtualStaticSource);
+            const staticMetaFile = staticZip.file('meta.json');
+            if (staticMetaFile) {
+                const staticMeta = JSON.parse(new TextDecoder().decode(await staticMetaFile.async('arraybuffer')));
+                const staticResource = staticAsset.resource as GSplatResource;
+                const staticSplatData = staticResource.gsplatData as GSplatData;
+                const loadStaticFile = async (name: string): Promise<ArrayBuffer> => {
+                    const file = staticZip.file(name);
+                    if (!file) {
+                        throw new Error(`Missing file in multi-splat static SOG: ${staticName}/${name}`);
+                    }
+                    return file.async('arraybuffer');
+                };
+                const visibilityProperties = await decodeVisibilityProperties(staticMeta.visibility, loadStaticFile, staticSplatData.numSplats);
+                addVisibilityPropertiesToGsplatData(staticSplatData, visibilityProperties);
+                (staticResource as any).visibilityCullThreshold =
+                    readVisibilityCullThreshold(staticMeta, mainMeta);
+            }
             profiler.event('sog4d.multi.asset', {
                 kind: 'static',
                 name: staticName,

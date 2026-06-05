@@ -346,11 +346,11 @@ class Scene {
             deltaTimeMs: deltaTime * 1000
         });
 
+        // Advance global state such as timeline playback before scene elements sample it.
+        this.events.fire('update', deltaTime);
+
         // allow elements to update
         this.forEachElement(e => e.onUpdate(deltaTime));
-
-        // fire global update
-        this.events.fire('update', deltaTime);
 
         // fire a 'serialize' event which listers will use to store their state. we'll use
         // this to decide if the view has changed and so requires rendering.
@@ -406,11 +406,11 @@ class Scene {
                 if (splat.visible && splat.entity.gsplat?.instance) {
                     totalGsplats += splat.numSplats;
                     activeGsplats += splat.isDynamic ? (splat.activeIndices?.length ?? 0) : splat.numSplats;
-                    drawGsplats += splat.lastDrawSplats ?? 0;
+                    drawGsplats += splat.renderSplats;
                 }
             }
         });
-        (this.app.renderer as { _gsplatCount?: number })._gsplatCount = totalGsplats;
+        (this.app.renderer as { _gsplatCount?: number })._gsplatCount = drawGsplats;
         (this.app.stats.frame as any).profileTotalSplats = totalGsplats;
         (this.app.stats.frame as any).profileActiveSplats = activeGsplats;
         (this.app.stats.frame as any).profileDrawSplats = drawGsplats;
