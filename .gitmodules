@@ -1,0 +1,4 @@
+[submodule "engine"]
+	path = engine
+	url = git@github.com:forgrabbit/engine.git
+	branch = profiling
