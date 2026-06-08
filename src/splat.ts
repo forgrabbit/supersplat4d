@@ -53,6 +53,12 @@ const boundingPoints =
 
 const PRESORT_CULL_THRESHOLD_SCALE = 0.98;
 const PRESORT_CAMERA_EPSILON = 1e-5;
+const PRESORT_PROFILE_SAMPLE_RATE = 64;
+const PRESORT_PROFILE_SAMPLE_MASK = PRESORT_PROFILE_SAMPLE_RATE - 1;
+
+const estimateSampledMs = (sampleMs: number, samples: number, population: number) => {
+    return samples > 0 && population > 0 ? sampleMs * population / samples : 0;
+};
 
 type VisibilitySvCpuCache = {
     siteX: Float32Array[];
@@ -66,9 +72,35 @@ type PreSortFilterResult = {
     sourceCount: number;
     keptCount: number;
     deletedRejected: number;
+    baseOpacityRejected: number;
     opacityRejected: number;
+    dynamicOpacityTested: number;
+    dynamicOpacityRejected: number;
+    dynamicCenterUpdated: number;
+    frozenOpacityTested: number;
+    frozenOpacityRejected: number;
     visibilityTested: number;
     visibilityRejected: number;
+    setupMs: number;
+    loopMs: number;
+    finalizeMs: number;
+    dynamicOpacitySamples: number;
+    dynamicOpacitySampleMs: number;
+    dynamicOpacityEstimatedMs: number;
+    dynamicCenterSamples: number;
+    dynamicCenterSampleMs: number;
+    dynamicCenterEstimatedMs: number;
+    frozenOpacitySamples: number;
+    frozenOpacitySampleMs: number;
+    frozenOpacityEstimatedMs: number;
+    visibilitySamples: number;
+    visibilityDirectionSampleMs: number;
+    visibilityDirectionEstimatedMs: number;
+    visibilityEvalSampleMs: number;
+    visibilityEvalEstimatedMs: number;
+    visibilityApplySampleMs: number;
+    visibilityApplyEstimatedMs: number;
+    visibilityEstimatedMs: number;
 };
 
 type PreSortSource = {
@@ -1013,6 +1045,8 @@ class Splat extends Element {
         frozen: boolean,
         centers: Float32Array
     ): PreSortFilterResult {
+        const profileDetails = profiler.enabled;
+        const setupStart = profileDetails ? profiler.now() : 0;
         const state = this.splatData.getProp('state') as Uint8Array | null;
         const baseOpacity = this.getBaseOpacity();
         const totalSplats = this.splatData.numSplats;
@@ -1047,12 +1081,32 @@ class Splat extends Element {
 
         let keptCount = 0;
         let deletedRejected = 0;
+        let baseOpacityRejected = 0;
         let opacityRejected = 0;
+        let dynamicOpacityTested = 0;
+        let dynamicOpacityRejected = 0;
+        let dynamicCenterUpdated = 0;
+        let frozenOpacityTested = 0;
+        let frozenOpacityRejected = 0;
         let visibilityTested = 0;
         let visibilityRejected = 0;
+        let dynamicOpacitySamples = 0;
+        let dynamicOpacitySampleMs = 0;
+        let dynamicCenterSamples = 0;
+        let dynamicCenterSampleMs = 0;
+        let frozenOpacitySamples = 0;
+        let frozenOpacitySampleMs = 0;
+        let visibilitySamples = 0;
+        let visibilityDirectionSampleMs = 0;
+        let visibilityEvalSampleMs = 0;
+        let visibilityApplySampleMs = 0;
+
+        const setupMs = profileDetails ? profiler.now() - setupStart : 0;
+        const loopStart = profileDetails ? profiler.now() : 0;
 
         for (let source = 0; source < sourceCount; source++) {
             const index = sourceIndices ? sourceIndices[source] : source;
+            const sampleProfile = profileDetails && (source & PRESORT_PROFILE_SAMPLE_MASK) === 0;
 
             if (state && (state[index] & State.deleted) !== 0) {
                 deletedRejected++;
@@ -1066,15 +1120,23 @@ class Splat extends Element {
             let centerReady = false;
 
             if (useDynamic) {
+                dynamicOpacityTested++;
+                const dynamicOpacityStart = sampleProfile ? profiler.now() : 0;
                 const dt = tAbs - tc[index];
                 const dtScaled = dt / Math.max(ts[index], 1e-6);
                 opacity *= Math.exp(-(dtScaled * dtScaled));
+                if (sampleProfile) {
+                    dynamicOpacitySamples++;
+                    dynamicOpacitySampleMs += profiler.now() - dynamicOpacityStart;
+                }
 
                 if (opacity < dynamicOpacityThreshold) {
                     opacityRejected++;
+                    dynamicOpacityRejected++;
                     continue;
                 }
 
+                const dynamicCenterStart = sampleProfile ? profiler.now() : 0;
                 cx = x0[index] + m0[index] * dt;
                 cy = y0[index] + m1[index] * dt;
                 cz = z0[index] + m2[index] * dt;
@@ -1083,20 +1145,34 @@ class Splat extends Element {
                 centers[centerOffset + 1] = cy;
                 centers[centerOffset + 2] = cz;
                 centerReady = true;
+                dynamicCenterUpdated++;
+                if (sampleProfile) {
+                    dynamicCenterSamples++;
+                    dynamicCenterSampleMs += profiler.now() - dynamicCenterStart;
+                }
             } else if (!useFrozenOpacity && opacity < threshold) {
                 opacityRejected++;
+                baseOpacityRejected++;
                 continue;
             }
 
             if (useFrozenOpacity) {
+                frozenOpacityTested++;
+                const frozenOpacityStart = sampleProfile ? profiler.now() : 0;
                 opacity = frozenOpacity![index];
+                if (sampleProfile) {
+                    frozenOpacitySamples++;
+                    frozenOpacitySampleMs += profiler.now() - frozenOpacityStart;
+                }
                 if (opacity < threshold) {
                     opacityRejected++;
+                    frozenOpacityRejected++;
                     continue;
                 }
             }
 
             if (doVisibility) {
+                const visibilityDirectionStart = sampleProfile ? profiler.now() : 0;
                 if (!centerReady) {
                     const centerOffset = index * 3;
                     cx = centers[centerOffset + 0];
@@ -1111,16 +1187,28 @@ class Splat extends Element {
                 const vx = dx * invLen;
                 const vy = dy * invLen;
                 const vz = dz * invLen;
+                if (sampleProfile) {
+                    visibilityDirectionSampleMs += profiler.now() - visibilityDirectionStart;
+                }
 
                 let visRaw = 0;
+                const visibilityEvalStart = sampleProfile ? profiler.now() : 0;
                 if (visibilityData.mode === 'sv' && svCache) {
                     visRaw = this.evalVisibilitySVDeg3Cached(vx, vy, vz, svCache, index);
                 } else if (visibilityData.mode === 'sh') {
                     visRaw = this.evalVisibilitySHDeg3(vx, vy, vz, visibilityData.coeffs, index);
                 }
+                if (sampleProfile) {
+                    visibilityEvalSampleMs += profiler.now() - visibilityEvalStart;
+                }
 
                 visibilityTested++;
+                const visibilityApplyStart = sampleProfile ? profiler.now() : 0;
                 opacity *= this.sigmoid(visRaw);
+                if (sampleProfile) {
+                    visibilitySamples++;
+                    visibilityApplySampleMs += profiler.now() - visibilityApplyStart;
+                }
                 if (opacity < threshold) {
                     visibilityRejected++;
                     continue;
@@ -1130,17 +1218,53 @@ class Splat extends Element {
             scratch[keptCount++] = index;
         }
 
+        const loopMs = profileDetails ? profiler.now() - loopStart : 0;
+        const finalizeStart = profileDetails ? profiler.now() : 0;
         const allSourceSplats = !sourceIndices && keptCount === sourceCount && deletedRejected === 0;
         const mapping = allSourceSplats ? null : scratch.slice(0, keptCount);
+        const finalizeMs = profileDetails ? profiler.now() - finalizeStart : 0;
+        const dynamicOpacityEstimatedMs = estimateSampledMs(dynamicOpacitySampleMs, dynamicOpacitySamples, dynamicOpacityTested);
+        const dynamicCenterEstimatedMs = estimateSampledMs(dynamicCenterSampleMs, dynamicCenterSamples, dynamicCenterUpdated);
+        const frozenOpacityEstimatedMs = estimateSampledMs(frozenOpacitySampleMs, frozenOpacitySamples, frozenOpacityTested);
+        const visibilityDirectionEstimatedMs = estimateSampledMs(visibilityDirectionSampleMs, visibilitySamples, visibilityTested);
+        const visibilityEvalEstimatedMs = estimateSampledMs(visibilityEvalSampleMs, visibilitySamples, visibilityTested);
+        const visibilityApplyEstimatedMs = estimateSampledMs(visibilityApplySampleMs, visibilitySamples, visibilityTested);
+        const visibilityEstimatedMs = visibilityDirectionEstimatedMs + visibilityEvalEstimatedMs + visibilityApplyEstimatedMs;
 
         return {
             mapping,
             sourceCount,
             keptCount,
             deletedRejected,
+            baseOpacityRejected,
             opacityRejected,
+            dynamicOpacityTested,
+            dynamicOpacityRejected,
+            dynamicCenterUpdated,
+            frozenOpacityTested,
+            frozenOpacityRejected,
             visibilityTested,
-            visibilityRejected
+            visibilityRejected,
+            setupMs,
+            loopMs,
+            finalizeMs,
+            dynamicOpacitySamples,
+            dynamicOpacitySampleMs,
+            dynamicOpacityEstimatedMs,
+            dynamicCenterSamples,
+            dynamicCenterSampleMs,
+            dynamicCenterEstimatedMs,
+            frozenOpacitySamples,
+            frozenOpacitySampleMs,
+            frozenOpacityEstimatedMs,
+            visibilitySamples,
+            visibilityDirectionSampleMs,
+            visibilityDirectionEstimatedMs,
+            visibilityEvalSampleMs,
+            visibilityEvalEstimatedMs,
+            visibilityApplySampleMs,
+            visibilityApplyEstimatedMs,
+            visibilityEstimatedMs
         };
     }
 
@@ -1207,21 +1331,68 @@ class Splat extends Element {
             splat: this,
             frame: source.frame,
             segment: source.segmentIdx,
+            isDynamic: this.isDynamic,
+            visibilityMode: this.visibilityMode,
+            visibilityNumLobes: this.visibilityNumLobes,
+            profileSampleRate: PRESORT_PROFILE_SAMPLE_RATE,
             sourceCount: result.sourceCount,
             keptCount: result.keptCount,
             deletedRejected: result.deletedRejected,
+            baseOpacityRejected: result.baseOpacityRejected,
             opacityRejected: result.opacityRejected,
+            dynamicOpacityTested: result.dynamicOpacityTested,
+            dynamicOpacityRejected: result.dynamicOpacityRejected,
+            dynamicCenterUpdated: result.dynamicCenterUpdated,
+            frozenOpacityTested: result.frozenOpacityTested,
+            frozenOpacityRejected: result.frozenOpacityRejected,
             visibilityTested: result.visibilityTested,
             visibilityRejected: result.visibilityRejected,
             threshold,
             frozen,
+            setupMs: result.setupMs,
+            loopMs: result.loopMs,
+            finalizeMs: result.finalizeMs,
+            dynamicOpacitySamples: result.dynamicOpacitySamples,
+            dynamicOpacitySampleMs: result.dynamicOpacitySampleMs,
+            dynamicOpacityEstimatedMs: result.dynamicOpacityEstimatedMs,
+            dynamicCenterSamples: result.dynamicCenterSamples,
+            dynamicCenterSampleMs: result.dynamicCenterSampleMs,
+            dynamicCenterEstimatedMs: result.dynamicCenterEstimatedMs,
+            frozenOpacitySamples: result.frozenOpacitySamples,
+            frozenOpacitySampleMs: result.frozenOpacitySampleMs,
+            frozenOpacityEstimatedMs: result.frozenOpacityEstimatedMs,
+            visibilitySamples: result.visibilitySamples,
+            visibilityDirectionSampleMs: result.visibilityDirectionSampleMs,
+            visibilityDirectionEstimatedMs: result.visibilityDirectionEstimatedMs,
+            visibilityEvalSampleMs: result.visibilityEvalSampleMs,
+            visibilityEvalEstimatedMs: result.visibilityEvalEstimatedMs,
+            visibilityApplySampleMs: result.visibilityApplySampleMs,
+            visibilityApplyEstimatedMs: result.visibilityApplyEstimatedMs,
+            visibilityEstimatedMs: result.visibilityEstimatedMs,
             buildMs
         };
 
         profiler.addFrameValue('prefilterMs', buildMs);
+        profiler.addFrameValue('prefilterSetupMs', result.setupMs);
+        profiler.addFrameValue('prefilterLoopMs', result.loopMs);
+        profiler.addFrameValue('prefilterFinalizeMs', result.finalizeMs);
+        profiler.addFrameValue('prefilterDynamicOpacityEstimatedMs', result.dynamicOpacityEstimatedMs);
+        profiler.addFrameValue('prefilterDynamicCenterEstimatedMs', result.dynamicCenterEstimatedMs);
+        profiler.addFrameValue('prefilterFrozenOpacityEstimatedMs', result.frozenOpacityEstimatedMs);
+        profiler.addFrameValue('prefilterVisibilityDirectionEstimatedMs', result.visibilityDirectionEstimatedMs);
+        profiler.addFrameValue('prefilterVisibilityEvalEstimatedMs', result.visibilityEvalEstimatedMs);
+        profiler.addFrameValue('prefilterVisibilityApplyEstimatedMs', result.visibilityApplyEstimatedMs);
+        profiler.addFrameValue('prefilterVisibilityEstimatedMs', result.visibilityEstimatedMs);
         profiler.maxFrameValue('prefilterSourceSplats', result.sourceCount);
         profiler.maxFrameValue('prefilterKeptSplats', result.keptCount);
+        profiler.addFrameValue('prefilterBaseOpacityRejected', result.baseOpacityRejected);
         profiler.addFrameValue('prefilterOpacityRejected', result.opacityRejected);
+        profiler.addFrameValue('prefilterDynamicOpacityTested', result.dynamicOpacityTested);
+        profiler.addFrameValue('prefilterDynamicOpacityRejected', result.dynamicOpacityRejected);
+        profiler.addFrameValue('prefilterDynamicCenterUpdated', result.dynamicCenterUpdated);
+        profiler.addFrameValue('prefilterFrozenOpacityTested', result.frozenOpacityTested);
+        profiler.addFrameValue('prefilterFrozenOpacityRejected', result.frozenOpacityRejected);
+        profiler.addFrameValue('prefilterVisibilityTested', result.visibilityTested);
         profiler.addFrameValue('prefilterVisibilityRejected', result.visibilityRejected);
         profiler.setFrameValues({
             segmentIndex: source.segmentIdx,
@@ -1233,14 +1404,44 @@ class Splat extends Element {
             splat: this.name,
             frame: source.frame,
             segment: source.segmentIdx,
+            isDynamic: this.isDynamic,
+            visibilityMode: this.visibilityMode,
+            visibilityNumLobes: this.visibilityNumLobes,
+            profileSampleRate: PRESORT_PROFILE_SAMPLE_RATE,
             sourceCount: result.sourceCount,
             keptCount: result.keptCount,
             deletedRejected: result.deletedRejected,
+            baseOpacityRejected: result.baseOpacityRejected,
             opacityRejected: result.opacityRejected,
+            dynamicOpacityTested: result.dynamicOpacityTested,
+            dynamicOpacityRejected: result.dynamicOpacityRejected,
+            dynamicCenterUpdated: result.dynamicCenterUpdated,
+            frozenOpacityTested: result.frozenOpacityTested,
+            frozenOpacityRejected: result.frozenOpacityRejected,
             visibilityTested: result.visibilityTested,
             visibilityRejected: result.visibilityRejected,
             threshold,
             frozen,
+            setupMs: result.setupMs,
+            loopMs: result.loopMs,
+            finalizeMs: result.finalizeMs,
+            dynamicOpacitySamples: result.dynamicOpacitySamples,
+            dynamicOpacitySampleMs: result.dynamicOpacitySampleMs,
+            dynamicOpacityEstimatedMs: result.dynamicOpacityEstimatedMs,
+            dynamicCenterSamples: result.dynamicCenterSamples,
+            dynamicCenterSampleMs: result.dynamicCenterSampleMs,
+            dynamicCenterEstimatedMs: result.dynamicCenterEstimatedMs,
+            frozenOpacitySamples: result.frozenOpacitySamples,
+            frozenOpacitySampleMs: result.frozenOpacitySampleMs,
+            frozenOpacityEstimatedMs: result.frozenOpacityEstimatedMs,
+            visibilitySamples: result.visibilitySamples,
+            visibilityDirectionSampleMs: result.visibilityDirectionSampleMs,
+            visibilityDirectionEstimatedMs: result.visibilityDirectionEstimatedMs,
+            visibilityEvalSampleMs: result.visibilityEvalSampleMs,
+            visibilityEvalEstimatedMs: result.visibilityEvalEstimatedMs,
+            visibilityApplySampleMs: result.visibilityApplySampleMs,
+            visibilityApplyEstimatedMs: result.visibilityApplyEstimatedMs,
+            visibilityEstimatedMs: result.visibilityEstimatedMs,
             buildMs
         });
 
