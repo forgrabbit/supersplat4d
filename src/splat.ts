@@ -55,6 +55,7 @@ const PRESORT_CULL_THRESHOLD_SCALE = 0.98;
 const PRESORT_CAMERA_EPSILON = 1e-5;
 const PRESORT_PROFILE_SAMPLE_RATE = 64;
 const PRESORT_PROFILE_SAMPLE_MASK = PRESORT_PROFILE_SAMPLE_RATE - 1;
+const CPU_VISIBILITY_PREFILTER_DEFAULT = false;
 
 const estimateSampledMs = (sampleMs: number, samples: number, population: number) => {
     return samples > 0 && population > 0 ? sampleMs * population / samples : 0;
@@ -161,6 +162,7 @@ class Splat extends Element {
     visibilitySVLobeStride = 0;
     /** Effective alpha threshold after visibility (and dynamic temporal) modulation; from PLY cfg_args or 0.005. */
     visibilityCullThreshold = 0.005;
+    cpuVisibilityPrefilter = CPU_VISIBILITY_PREFILTER_DEFAULT;
     private _freezeOpacityHandler: ((enabled: boolean) => void) | null = null;
 
     // Dynamic gaussian support
@@ -231,6 +233,7 @@ class Splat extends Element {
         this.hasVisibility = this.visibilityMode !== 'none';
         this.visibilityNumLobes = this.visibilityData.mode === 'sv' ? this.visibilityData.numLobes : 0;
         this.visibilityCullThreshold = (resource as any).visibilityCullThreshold ?? 0.005;
+        this.cpuVisibilityPrefilter = (resource as any).cpuVisibilityPrefilter ?? CPU_VISIBILITY_PREFILTER_DEFAULT;
         if ((resource as any).dynManifest) {
             this.isDynamic = true;
             this.dynManifest = (resource as any).dynManifest as DynManifest;
@@ -865,7 +868,8 @@ class Splat extends Element {
     }
 
     private needsPreSortOpacityFilter() {
-        return this.isDynamic || this.hasVisibility;
+        const frozen = this.hasVisibility && !!this.scene.events.invoke('visibility.freezeEffectiveOpacity');
+        return this.isDynamic || this.cpuVisibilityPrefilter || frozen;
     }
 
     private preSortCullThreshold() {
@@ -1074,7 +1078,7 @@ class Splat extends Element {
         const ts = this._dyn_ts as Float32Array;
         const frozenOpacity = frozen ? this._frozenEffectiveOpacity : null;
         const useFrozenOpacity = !!frozenOpacity;
-        const doVisibility = this.hasVisibility && !useFrozenOpacity;
+        const doVisibility = this.cpuVisibilityPrefilter && this.hasVisibility && !useFrozenOpacity;
         const visibilityData = this.visibilityData;
         const svCache = doVisibility && visibilityData.mode === 'sv' ? this.getVisibilitySvCpuCache() : null;
         const dynamicOpacityThreshold = threshold;
@@ -1291,7 +1295,7 @@ class Splat extends Element {
         const threshold = this.preSortCullThreshold();
         this.getCameraPositionInSplatSpace(cameraNode, vecc);
 
-        const cameraSensitive = this.hasVisibility && !frozen;
+        const cameraSensitive = this.cpuVisibilityPrefilter && this.hasVisibility && !frozen;
         const cameraChanged = cameraSensitive && (
             Math.abs(vecc.x - this._lastPreSortCamera.x) > PRESORT_CAMERA_EPSILON ||
             Math.abs(vecc.y - this._lastPreSortCamera.y) > PRESORT_CAMERA_EPSILON ||
@@ -1334,6 +1338,7 @@ class Splat extends Element {
             isDynamic: this.isDynamic,
             visibilityMode: this.visibilityMode,
             visibilityNumLobes: this.visibilityNumLobes,
+            cpuVisibilityPrefilter: this.cpuVisibilityPrefilter,
             profileSampleRate: PRESORT_PROFILE_SAMPLE_RATE,
             sourceCount: result.sourceCount,
             keptCount: result.keptCount,
@@ -1407,6 +1412,7 @@ class Splat extends Element {
             isDynamic: this.isDynamic,
             visibilityMode: this.visibilityMode,
             visibilityNumLobes: this.visibilityNumLobes,
+            cpuVisibilityPrefilter: this.cpuVisibilityPrefilter,
             profileSampleRate: PRESORT_PROFILE_SAMPLE_RATE,
             sourceCount: result.sourceCount,
             keptCount: result.keptCount,
@@ -1916,6 +1922,8 @@ class Splat extends Element {
      * 1. 每一帧更新位置 (centers)
      * 2. 排序
      * 3. 渲染
+     *
+     * @param {number} deltaTime - Time elapsed since the previous update.
      */
     onUpdate(deltaTime: number) {
         if (!this.isDynamic || !this.dynManifest) {
