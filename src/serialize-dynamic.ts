@@ -13,6 +13,18 @@ import { SplatTransformCache } from './splat-serialize';
 // JSZip is loaded globally via script tag
 declare const JSZip: any;
 
+const SH_C0 = 0.28209479177387814;
+const shNames = new Array(45).fill('').map((_, i) => `f_rest_${i}`);
+const shBandCoeffs = [0, 3, 8, 15];
+const sigmoid = (v: number) => 1 / (1 + Math.exp(-v));
+const invSigmoid = (value: number) => ((value <= 0) ? -400 : ((value >= 1) ? 400 : -Math.log(1 / value - 1)));
+
+const calcSHCoeffCount = (propMap: Map<string, any>) => {
+    const firstMissing = shNames.findIndex(name => !propMap.has(name));
+    const bands = ({ '9': 1, '24': 2, '-1': 3 } as Record<string, number>)[firstMissing] ?? 0;
+    return shBandCoeffs[bands];
+};
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -328,9 +340,50 @@ const serializeDynamicPly = async (
     const hasRot    = rawR0 && rawR1 && rawR2 && rawR3;
     const hasScale  = rawSc0 && rawSc1 && rawSc2;
 
+    const rawFdc0 = propMap.get('f_dc_0')?.storage as Float32Array | null;
+    const rawFdc1 = propMap.get('f_dc_1')?.storage as Float32Array | null;
+    const rawFdc2 = propMap.get('f_dc_2')?.storage as Float32Array | null;
+    const rawOpacity = propMap.get('opacity')?.storage as Float32Array | null;
+    const { tintClr, temperature, saturation, brightness, blackPoint, whitePoint, transparency } = splat;
+    const hasColor = !!(rawFdc0 && rawFdc1 && rawFdc2);
+    const hasColorAdjustment = hasColor && (
+        tintClr.r !== 1 || tintClr.g !== 1 || tintClr.b !== 1 ||
+        temperature !== 0 || saturation !== 1 ||
+        brightness !== 0 || blackPoint !== 0 || whitePoint !== 1
+    );
+    const hasOpacityAdjustment = !!rawOpacity && transparency !== 1;
+    const colorOffset = -blackPoint + brightness;
+    const colorScale = 1 / Math.max(whitePoint - blackPoint, 1e-6);
+    const colorMul = {
+        r: colorScale * tintClr.r * (1 + temperature),
+        g: colorScale * tintClr.g,
+        b: colorScale * tintClr.b * (1 - temperature)
+    };
+    const shCoeffCount = calcSHCoeffCount(propMap);
+    const bakedSH = hasColorAdjustment && shCoeffCount > 0 ? new Float32Array(shCoeffCount * 3) : null;
+    const shPropLookup = new Map<string, number>();
+    if (bakedSH) {
+        for (let s = 0; s < shCoeffCount * 3; ++s) {
+            shPropLookup.set(shNames[s], s);
+        }
+    }
+    const toDcColor = (value: number) => value * SH_C0 + 0.5;
+    const fromDcColor = (value: number) => (value - 0.5) / SH_C0;
+    const applyColorAdjustment = (c: { r: number, g: number, b: number }, offset: number) => {
+        c.r = offset + c.r * colorMul.r;
+        c.g = offset + c.g * colorMul.g;
+        c.b = offset + c.b * colorMul.b;
+
+        const grey = c.r * 0.299 + c.g * 0.587 + c.b * 0.114;
+        c.r = grey + (c.r - grey) * saturation;
+        c.g = grey + (c.g - grey) * saturation;
+        c.b = grey + (c.b - grey) * saturation;
+    };
+
     // Temporary objects reused per splat to avoid allocation in the hot loop.
     const tmpVec  = new Vec3();
     const tmpQuat = new Quat();
+    const tmpClr = { r: 0, g: 0, b: 0 };
     
     // Write splat data
     const bufferSize = 1024 * bytesPerSplat;
@@ -390,6 +443,31 @@ const serializeDynamicPly = async (
             bsc1 = Math.log(Math.exp(rawSc1![i]) * Math.abs(ts.y));
             bsc2 = Math.log(Math.exp(rawSc2![i]) * Math.abs(ts.z));
         }
+
+        let bdc0 = 0, bdc1 = 0, bdc2 = 0;
+        if (hasColorAdjustment) {
+            tmpClr.r = toDcColor(rawFdc0![i]);
+            tmpClr.g = toDcColor(rawFdc1![i]);
+            tmpClr.b = toDcColor(rawFdc2![i]);
+            applyColorAdjustment(tmpClr, colorOffset);
+            bdc0 = fromDcColor(tmpClr.r);
+            bdc1 = fromDcColor(tmpClr.g);
+            bdc2 = fromDcColor(tmpClr.b);
+
+            if (bakedSH) {
+                for (let s = 0; s < shCoeffCount; ++s) {
+                    tmpClr.r = (propMap.get(shNames[s])?.storage as Float32Array)[i];
+                    tmpClr.g = (propMap.get(shNames[s + shCoeffCount])?.storage as Float32Array)[i];
+                    tmpClr.b = (propMap.get(shNames[s + shCoeffCount * 2])?.storage as Float32Array)[i];
+                    applyColorAdjustment(tmpClr, 0);
+                    bakedSH[s] = tmpClr.r;
+                    bakedSH[s + shCoeffCount] = tmpClr.g;
+                    bakedSH[s + shCoeffCount * 2] = tmpClr.b;
+                }
+            }
+        }
+
+        const bakedOpacity = hasOpacityAdjustment ? invSigmoid(sigmoid(rawOpacity![i]) * transparency) : 0;
         
         for (const prop of props) {
             const storage = prop.storage as Float32Array | Uint8Array;
@@ -411,6 +489,10 @@ const serializeDynamicPly = async (
                 case 'scale_0':  value = bsc0; break;
                 case 'scale_1':  value = bsc1; break;
                 case 'scale_2':  value = bsc2; break;
+                case 'f_dc_0':   value = hasColorAdjustment ? bdc0 : storage[i]; break;
+                case 'f_dc_1':   value = hasColorAdjustment ? bdc1 : storage[i]; break;
+                case 'f_dc_2':   value = hasColorAdjustment ? bdc2 : storage[i]; break;
+                case 'opacity':  value = hasOpacityAdjustment ? bakedOpacity : storage[i]; break;
                 // trbf_scale is stored as exp() in memory, PLY wants log()
                 case 'trbf_scale': value = Math.log(Math.max(storage[i], 1e-8)); break;
                 // trbf_center, f_dc_*, opacity, nx, ny, nz, f_rest_* — no transform needed
@@ -418,6 +500,8 @@ const serializeDynamicPly = async (
                     const svSite = svSitePropLookup.get(prop.name);
                     if (svSite) {
                         value = svSite.axis === 'x' ? svSite.site.bx : svSite.axis === 'y' ? svSite.site.by : svSite.site.bz;
+                    } else if (bakedSH && shPropLookup.has(prop.name)) {
+                        value = bakedSH[shPropLookup.get(prop.name)!];
                     } else {
                         value = storage[i];
                     }
