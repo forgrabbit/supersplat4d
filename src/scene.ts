@@ -389,7 +389,7 @@ class Scene {
             if (e.type === ElementType.splat) {
                 const splat = e as Splat;
                 if (splat.visible && splat.entity.gsplat?.instance) {
-                    totalGsplats += splat.renderSplats;
+                    totalGsplats += splat.numSplats;
                 }
             }
         });
