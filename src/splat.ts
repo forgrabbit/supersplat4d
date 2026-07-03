@@ -35,6 +35,7 @@ const vec = new Vec3();
 const veca = new Vec3();
 const vecb = new Vec3();
 const vecc = new Vec3();
+const vec2 = new Vec3();
 const mat = new Mat4();
 
 const boundingPoints =
@@ -66,6 +67,7 @@ class Splat extends Element {
     selectionBoundStorage: BoundingBox;
     localBoundStorage: BoundingBox;
     worldBoundStorage: BoundingBox;
+    focusBoundStorage: BoundingBox;
     selectionBoundDirty = true;
     localBoundDirty = true;
     worldBoundDirty = true;
@@ -437,6 +439,7 @@ class Splat extends Element {
         this.localBoundStorage = instance.resource.aabb;
         // @ts-ignore
         this.worldBoundStorage = instance.meshInstance._aabb;
+        this.focusBoundStorage = new BoundingBox();
 
         // @ts-ignore
         instance.meshInstance._updateAabb = false;
@@ -1345,6 +1348,89 @@ class Splat extends Element {
             this.worldBoundDirty = false;
         }
         return worldBound;
+    }
+
+    getFocusFrame() {
+        const bound = this.focusBoundStorage;
+        const sourceBound = this.numSelected > 0 ? this.selectionBound : this.getRobustLocalFocusBound();
+        bound.copy(sourceBound);
+
+        vec.copy(bound.center);
+        const worldTransform = this.worldTransform;
+        worldTransform.transformPoint(vec, vec);
+        worldTransform.getScale(vec2);
+
+        return {
+            focalPoint: vec.clone(),
+            radius: bound.halfExtents.length() * vec2.x
+        };
+    }
+
+    private getRobustLocalFocusBound() {
+        if (!this.isDynamic) {
+            return this.localBound;
+        }
+
+        const x = this.splatData.getProp('x') as Float32Array | null;
+        const y = this.splatData.getProp('y') as Float32Array | null;
+        const z = this.splatData.getProp('z') as Float32Array | null;
+        const motion0 = this.splatData.getProp('motion_0') as Float32Array | null;
+        const motion1 = this.splatData.getProp('motion_1') as Float32Array | null;
+        const motion2 = this.splatData.getProp('motion_2') as Float32Array | null;
+        const trbfCenter = this.splatData.getProp('trbf_center') as Float32Array | null;
+
+        if (!x || !y || !z || !motion0 || !motion1 || !motion2 || !trbfCenter) {
+            return this.localBound;
+        }
+
+        const indices = this.activeIndices && this.activeIndices.length >= 256 ? this.activeIndices : null;
+        const count = indices?.length ?? this.numSplats;
+        const stride = Math.max(1, Math.floor(count / 4096));
+        const sampleCount = Math.ceil(count / stride);
+
+        const xs = new Array<number>(sampleCount);
+        const ys = new Array<number>(sampleCount);
+        const zs = new Array<number>(sampleCount);
+        const useDynamicPositions = !!indices;
+        const currentFrame = (this.scene.events.invoke('timeline.frame') ?? 0) as number;
+        const totalFrames = this.dynManifest ? Math.ceil(this.dynManifest.duration * this.dynManifest.fps) : 1;
+        const frame = totalFrames > 0 ? currentFrame % totalFrames : 0;
+        const t = this.dynManifest ? this.dynManifest.start + frame / this.dynManifest.fps : 0;
+        let write = 0;
+
+        for (let i = 0; i < count; i += stride) {
+            const index = indices ? indices[i] : i;
+            const dt = useDynamicPositions ? t - trbfCenter[index] : 0;
+            xs[write] = x[index] + motion0[index] * dt;
+            ys[write] = y[index] + motion1[index] * dt;
+            zs[write] = z[index] + motion2[index] * dt;
+            write++;
+        }
+
+        xs.length = write;
+        ys.length = write;
+        zs.length = write;
+
+        if (write < 64) {
+            return this.localBound;
+        }
+
+        xs.sort((a, b) => a - b);
+        ys.sort((a, b) => a - b);
+        zs.sort((a, b) => a - b);
+
+        const lower = Math.floor((write - 1) * 0.01);
+        const upper = Math.ceil((write - 1) * 0.99);
+        const min = veca.set(xs[lower], ys[lower], zs[lower]);
+        const max = vecb.set(xs[upper], ys[upper], zs[upper]);
+
+        if (!isFinite(min.x) || !isFinite(min.y) || !isFinite(min.z) ||
+            !isFinite(max.x) || !isFinite(max.y) || !isFinite(max.z)) {
+            return this.localBound;
+        }
+
+        this.focusBoundStorage.setMinMax(min, max);
+        return this.focusBoundStorage;
     }
 
     set visible(value: boolean) {

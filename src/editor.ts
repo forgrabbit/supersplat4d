@@ -15,7 +15,6 @@ const removeExtension = (filename: string) => {
 // register for editor and scene events
 const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: Scene) => {
     const vec = new Vec3();
-    const vec2 = new Vec3();
     const vec4 = new Vec4();
     const mat = new Mat4();
     const SH_C0 = 0.28209479177387814;
@@ -267,16 +266,11 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         const splat = selectedSplats()[0];
         if (splat) {
 
-            const bound = splat.numSelected > 0 ? splat.selectionBound : splat.localBound;
-            vec.copy(bound.center);
-
-            const worldTransform = splat.worldTransform;
-            worldTransform.transformPoint(vec, vec);
-            worldTransform.getScale(vec2);
+            const frame = splat.getFocusFrame();
 
             scene.camera.focus({
-                focalPoint: vec,
-                radius: bound.halfExtents.length() * vec2.x,
+                focalPoint: frame.focalPoint,
+                radius: frame.radius,
                 speed: 1
             });
         }
